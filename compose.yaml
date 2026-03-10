@@ -1,0 +1,20 @@
+services:
+  lineage-guacamole:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lineage-guacamole
+    environment:
+      BRANCH: lineage-23.2
+      DEVICE: guacamole
+      WORKDIR: /workspace/android
+      CCACHE_DIR: /ccache
+      CCACHE_SIZE: 100G
+      JAVA_HOME: /usr/lib/jvm/java-21-openjdk-amd64
+      WG_REPO: https://git.zx2c4.com/wireguard-linux-compat
+    volumes:
+      - /srv/komodo/lineage-guacamole/workspace:/workspace
+      - /srv/komodo/lineage-guacamole/ccache:/ccache
+    stdin_open: true
+    tty: true
+    command: ["/bin/bash", "-lc", "sleep infinity"]
