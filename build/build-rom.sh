@@ -64,8 +64,15 @@ sync_forced_single() {
 }
 
 count_recovery_errors() {
-  local logfile="$1"
-  grep -E -c 'unparseable HEAD|would be overwritten by checkout| checkout [0-9a-f]{7,}' "$logfile" || true
+  local total=0
+  local logfile
+
+  for logfile in "$@"; do
+    [ -f "$logfile" ] || continue
+    total=$((total + $(grep -E -c 'unparseable HEAD|would be overwritten by checkout| checkout [0-9a-f]{7,}' "$logfile" || true)))
+  done
+
+  echo "$total"
 }
 
 extract_bad_projects_from_log() {
@@ -85,18 +92,36 @@ extract_bad_projects_from_log() {
   ' "$logfile" | sort -u
 }
 
-remove_bad_projects() {
-  local logfile="$1"
+find_invalid_head_projects() {
+  cd "$WORKDIR"
+  repo forall -c 'git rev-parse --verify -q HEAD >/dev/null || echo "$REPO_PATH"' 2>/dev/null || true
+}
+
+remove_bad_projects_from_logs() {
   local removed_any=1
+  local proj
+  local logfile
+
+  for logfile in "$@"; do
+    [ -f "$logfile" ] || continue
+    while IFS= read -r proj; do
+      [ -z "$proj" ] && continue
+      if [ -e "$WORKDIR/$proj" ]; then
+        log "Removing broken project from log ($logfile): $proj"
+        rm -rf "$WORKDIR/$proj"
+        removed_any=0
+      fi
+    done < <(extract_bad_projects_from_log "$logfile")
+  done
 
   while IFS= read -r proj; do
     [ -z "$proj" ] && continue
     if [ -e "$WORKDIR/$proj" ]; then
-      log "Removing broken project: $proj"
+      log "Removing project with invalid HEAD: $proj"
       rm -rf "$WORKDIR/$proj"
       removed_any=0
     fi
-  done < <(extract_bad_projects_from_log "$logfile")
+  done < <(find_invalid_head_projects)
 
   return "$removed_any"
 }
@@ -125,7 +150,7 @@ sync_with_recovery() {
     return 0
   fi
 
-  errcount="$(count_recovery_errors "$log2")"
+  errcount="$(count_recovery_errors "$log1" "$log2")"
   log "Recovery sync error count: $errcount"
 
   if [ "${errcount:-0}" -ge 20 ]; then
@@ -137,7 +162,7 @@ sync_with_recovery() {
   fi
 
   log "Trying targeted removal of broken projects"
-  if remove_bad_projects "$log2"; then
+  if remove_bad_projects_from_logs "$log1" "$log2"; then
     sync_forced_single 2>&1 | tee "$log3"
     return 0
   fi
