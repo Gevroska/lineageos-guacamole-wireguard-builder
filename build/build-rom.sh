@@ -170,6 +170,35 @@ repair_repo_metadata_from_logs() {
   return "$repaired_any"
 }
 
+sync_projects_after_metadata_repair() {
+  local logfile="$1"
+  local projects=()
+  local project
+  local gitdir
+  local rel
+
+  while IFS= read -r gitdir; do
+    [ -z "$gitdir" ] && continue
+    rel="${gitdir#"$WORKDIR/.repo/projects/"}"
+    rel="${rel%.git}"
+    [ -z "$rel" ] && continue
+    [ "$rel" = "$gitdir" ] && continue
+    projects+=("$rel")
+  done < <(extract_broken_repo_gitdirs_from_log "$logfile")
+
+  while IFS= read -r project; do
+    [ -z "$project" ] && continue
+    projects+=("${project#platform/}")
+  done < <(extract_failed_project_objects_from_log "$logfile")
+
+  mapfile -t projects < <(printf '%s\n' "${projects[@]}" | sed '/^$/d' | sort -u)
+  [ "${#projects[@]}" -gt 0 ] || return 1
+
+  log "Resyncing repaired projects first: ${projects[*]}"
+  cd "$WORKDIR"
+  repo sync -c --no-clone-bundle --no-tags -j1 --force-sync --force-checkout --force-remove-dirty --fail-fast "${projects[@]}"
+}
+
 find_invalid_head_projects() {
   cd "$WORKDIR"
   repo forall -c 'git rev-parse --verify -q HEAD >/dev/null || echo "$REPO_PATH"' 2>/dev/null || true
@@ -257,6 +286,7 @@ sync_with_recovery() {
   log "Checking for broken .repo metadata before retry"
   if repair_repo_metadata_from_logs "$log1"; then
     clear_repo_locks
+    sync_projects_after_metadata_repair "$log1" || true
     if sync_forced_single 2>&1 | tee "$log2"; then
       return 0
     fi
@@ -388,6 +418,7 @@ if [ "$1" = "forall" ]; then
   exit 0
 fi
 if [ "$1" = "sync" ]; then
+  printf '%s\n' "$*" >> "${MOCK_REPO_SYNC_ARGS_FILE:-/dev/null}"
   exit 0
 fi
 exit 0
@@ -396,6 +427,7 @@ EOF
 
   PATH="$bin:$PATH"
   WORKDIR="$work"
+  export MOCK_REPO_SYNC_ARGS_FILE="$tmp/sync_args.log"
 
   MOCK_REPO_FORALL_OUTPUT=$'external/a
 external/b' PREEMPTIVE_REBUILD_THRESHOLD=10 preflight_repair_corrupt_projects
@@ -427,6 +459,9 @@ EOF
   [ ! -e "$work/.repo/projects/external/icu.git" ]
   [ ! -e "$work/.repo/project-objects/platform/external/icu.git" ]
   [ ! -e "$work/external/icu" ]
+
+  sync_projects_after_metadata_repair "$tmp/meta.log"
+  grep -q "external/icu" "$tmp/sync_args.log"
 
   rm -rf "$tmp"
   echo "Selftests passed"
