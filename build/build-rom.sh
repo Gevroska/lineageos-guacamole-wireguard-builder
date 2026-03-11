@@ -8,6 +8,7 @@ CCACHE_DIR="${CCACHE_DIR:-/ccache}"
 CCACHE_SIZE="${CCACHE_SIZE:-100G}"
 JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-21-openjdk-amd64}"
 WG_REPO="${WG_REPO:-https://git.zx2c4.com/wireguard-linux-compat}"
+PREEMPTIVE_REBUILD_THRESHOLD="${PREEMPTIVE_REBUILD_THRESHOLD:-200}"
 
 export USE_CCACHE=1
 export CCACHE_DIR
@@ -61,7 +62,7 @@ clear_repo_locks() {
 
 sync_aggressive_parallel() {
   cd "$WORKDIR"
-  repo sync -c --no-clone-bundle --no-tags -j"$(nproc --all)" --force-sync --force-checkout --force-remove-dirty
+  repo sync -c --no-clone-bundle --no-tags -j"$(nproc --all)" --force-sync --force-checkout --force-remove-dirty --fail-fast
 }
 
 sync_forced_single() {
@@ -132,6 +133,33 @@ remove_bad_projects_from_logs() {
   return "$removed_any"
 }
 
+preflight_repair_corrupt_projects() {
+  local invalid_projects=()
+  local invalid_count=0
+  local proj
+
+  mapfile -t invalid_projects < <(find_invalid_head_projects | sed '/^$/d' | sort -u)
+  invalid_count="${#invalid_projects[@]}"
+
+  if [ "$invalid_count" -eq 0 ]; then
+    return 0
+  fi
+
+  log "Preflight detected $invalid_count projects with invalid Git HEAD"
+  if [ "$invalid_count" -ge "$PREEMPTIVE_REBUILD_THRESHOLD" ]; then
+    log "Invalid HEAD count >= $PREEMPTIVE_REBUILD_THRESHOLD; wiping worktrees before sync"
+    wipe_worktrees_but_keep_repo
+    return 0
+  fi
+
+  for proj in "${invalid_projects[@]}"; do
+    if [ -e "$WORKDIR/$proj" ]; then
+      log "Preflight removing invalid-HEAD project: $proj"
+      rm -rf "$WORKDIR/$proj"
+    fi
+  done
+}
+
 wipe_worktrees_but_keep_repo() {
   cd "$WORKDIR"
   log "Wiping all working trees but keeping .repo"
@@ -146,6 +174,8 @@ sync_with_recovery() {
 
   require_free_space_gb /workspace 120
 
+  clear_repo_locks
+  preflight_repair_corrupt_projects
   clear_repo_locks
 
   log "Running aggressive repo sync"
@@ -260,4 +290,64 @@ main() {
   log "Artifacts: $WORKDIR/out/target/product/$DEVICE/"
 }
 
-main "$@"
+run_selftests() {
+  local tmp
+  local work
+  local bin
+  local logf
+
+  tmp="$(mktemp -d)"
+  work="$tmp/work"
+  bin="$tmp/bin"
+  mkdir -p "$work/.repo" "$work/external/a" "$work/external/b" "$work/external/c" "$bin"
+
+  cat >"$bin/repo" <<'EOF'
+#!/usr/bin/env bash
+set -e
+if [ "$1" = "forall" ]; then
+  printf '%s\n' "${MOCK_REPO_FORALL_OUTPUT:-}"
+  exit 0
+fi
+if [ "$1" = "sync" ]; then
+  exit 0
+fi
+exit 0
+EOF
+  chmod +x "$bin/repo"
+
+  PATH="$bin:$PATH"
+  WORKDIR="$work"
+
+  MOCK_REPO_FORALL_OUTPUT=$'external/a
+external/b' PREEMPTIVE_REBUILD_THRESHOLD=10 preflight_repair_corrupt_projects
+  [ ! -e "$work/external/a" ]
+  [ ! -e "$work/external/b" ]
+
+  mkdir -p "$work/external/d" "$work/external/e"
+  MOCK_REPO_FORALL_OUTPUT=$'external/c
+external/d
+external/e' PREEMPTIVE_REBUILD_THRESHOLD=3 preflight_repair_corrupt_projects
+  [ -d "$work/.repo" ]
+  [ ! -e "$work/external/c" ]
+  [ ! -e "$work/external/d" ]
+  [ ! -e "$work/external/e" ]
+
+  logf="$tmp/recovery.log"
+  cat >"$logf" <<'EOF'
+project external/google-fonts/fraunces: unparseable HEAD; trying to recover.
+Check that HEAD ref in .git/HEAD is valid.
+EOF
+  [ "$(count_recovery_errors "$logf")" -eq 2 ]
+
+  rm -rf "$tmp"
+  echo "Selftests passed"
+}
+
+if [ "${BUILD_ROM_SH_SELFTEST:-0}" = "1" ]; then
+  run_selftests
+  exit 0
+fi
+
+if [ "${BUILD_ROM_SH_LIB_ONLY:-0}" != "1" ]; then
+  main "$@"
+fi
