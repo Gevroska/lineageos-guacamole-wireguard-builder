@@ -17,19 +17,26 @@ export PATH="${JAVA_HOME}/bin:${PATH}"
 
 mkdir -p "$WORKDIR" "$CCACHE_DIR"
 
-ccache -M "$CCACHE_SIZE" || true
-
 log() {
   printf '\n[%s] %s\n' "$(date '+%F %T')" "$*"
 }
 
-require_free_space() {
+require_git_identity() {
+  if ! git config --global user.name >/dev/null; then
+    git config --global user.name "Lineage Builder"
+  fi
+  if ! git config --global user.email >/dev/null; then
+    git config --global user.email "builder@localhost"
+  fi
+}
+
+require_free_space_gb() {
   local path="$1"
   local min_gb="$2"
+  local avail_kb min_kb
 
-  local avail_kb
   avail_kb="$(df -Pk "$path" | awk 'NR==2 {print $4}')"
-  local min_kb=$((min_gb * 1024 * 1024))
+  min_kb=$((min_gb * 1024 * 1024))
 
   if [ "${avail_kb:-0}" -lt "$min_kb" ]; then
     echo "Not enough free space on $path. Need at least ${min_gb} GB free." >&2
@@ -40,35 +47,39 @@ require_free_space() {
 
 init_repo_if_needed() {
   cd "$WORKDIR"
-
   if [ ! -d .repo ]; then
     log "Initializing repo"
     repo init -u https://github.com/LineageOS/android.git -b "$BRANCH"
   fi
 }
 
-sync_once() {
+sync_normal() {
   cd "$WORKDIR"
   repo sync -c --no-clone-bundle --no-tags -j"$(nproc --all)"
 }
 
-sync_recovery_pass() {
+sync_forced_single() {
   cd "$WORKDIR"
-  repo sync -c --no-clone-bundle --no-tags -j1 --force-sync --fail-fast
+  repo sync -c --no-clone-bundle --no-tags -j1 --force-sync --force-checkout --fail-fast
+}
+
+count_recovery_errors() {
+  local logfile="$1"
+  grep -E -c 'unparseable HEAD|would be overwritten by checkout| checkout [0-9a-f]{7,}' "$logfile" || true
 }
 
 extract_bad_projects_from_log() {
   local logfile="$1"
 
   awk '
-    /error: .* checkout / {
-      sub(/^error: /, "", $0)
-      sub(/:.*$/, "", $0)
+    /: unparseable HEAD; trying to recover/ {
+      sub(/^project /, "", $0)
+      sub(/: unparseable HEAD; trying to recover.*/, "", $0)
       print
     }
-    /: unparseable HEAD; trying to recover/ {
-      sub(/: unparseable HEAD; trying to recover.*/, "", $0)
-      sub(/^project /, "", $0)
+    /^error: .*: .* checkout [0-9a-f]+$/ {
+      sub(/^error: /, "", $0)
+      sub(/: .*$/, "", $0)
       print
     }
   ' "$logfile" | sort -u
@@ -76,47 +87,70 @@ extract_bad_projects_from_log() {
 
 remove_bad_projects() {
   local logfile="$1"
-  local removed=0
+  local removed_any=1
 
   while IFS= read -r proj; do
     [ -z "$proj" ] && continue
-    if [ -d "$WORKDIR/$proj" ]; then
-      log "Removing broken project checkout: $proj"
+    if [ -e "$WORKDIR/$proj" ]; then
+      log "Removing broken project: $proj"
       rm -rf "$WORKDIR/$proj"
-      removed=1
+      removed_any=0
     fi
   done < <(extract_bad_projects_from_log "$logfile")
 
-  return $removed
+  return "$removed_any"
+}
+
+wipe_worktrees_but_keep_repo() {
+  cd "$WORKDIR"
+  log "Wiping all working trees but keeping .repo"
+  find . -mindepth 1 -maxdepth 1 ! -name .repo -exec rm -rf {} +
 }
 
 sync_with_recovery() {
-  local log1="/tmp/repo-sync-1.log"
-  local log2="/tmp/repo-sync-2.log"
+  local log1="/tmp/repo-sync-normal.log"
+  local log2="/tmp/repo-sync-recovery.log"
+  local log3="/tmp/repo-sync-rebuild.log"
+  local errcount=0
 
-  log "Checking free space before sync"
-  require_free_space /workspace 120
+  require_free_space_gb /workspace 120
 
   log "Running normal repo sync"
-  if sync_once 2>&1 | tee "$log1"; then
+  if sync_normal 2>&1 | tee "$log1"; then
     return 0
   fi
 
-  log "Normal sync failed; trying single-threaded forced recovery sync"
-  if sync_recovery_pass 2>&1 | tee "$log2"; then
+  log "Normal sync failed; running forced single-thread recovery sync"
+  if sync_forced_single 2>&1 | tee "$log2"; then
     return 0
   fi
 
-  log "Recovery sync failed; removing broken project directories from detected errors"
+  errcount="$(count_recovery_errors "$log2")"
+  log "Recovery sync error count: $errcount"
+
+  if [ "${errcount:-0}" -ge 20 ]; then
+    log "Too many broken repos detected; rebuilding working tree from .repo"
+    wipe_worktrees_but_keep_repo
+    require_free_space_gb /workspace 120
+    sync_forced_single 2>&1 | tee "$log3"
+    return 0
+  fi
+
+  log "Trying targeted removal of broken projects"
   if remove_bad_projects "$log2"; then
-    log "Retrying forced recovery sync after removing broken projects"
-    sync_recovery_pass
+    sync_forced_single 2>&1 | tee "$log3"
     return 0
   fi
 
-  echo "repo sync failed and no recoverable project list was extracted." >&2
-  echo "Inspect logs: $log1 and $log2" >&2
+  echo "repo sync failed and recovery could not fix it." >&2
+  echo "Logs: $log1 $log2 $log3" >&2
   exit 1
+}
+
+prepare_sources() {
+  cd "$WORKDIR"
+  source build/envsetup.sh
+  breakfast "$DEVICE"
 }
 
 clone_or_update_wireguard() {
@@ -135,6 +169,7 @@ clone_or_update_wireguard() {
 patch_kernel_if_needed() {
   local kernel_dir="$WORKDIR/kernel/oneplus/sm8150"
   local wg_dir="/workspace/wireguard-linux-compat"
+  local stamp="$WORKDIR/.wg_patch_applied"
 
   if [ ! -d "$kernel_dir" ]; then
     echo "Kernel tree not found: $kernel_dir" >&2
@@ -144,10 +179,13 @@ patch_kernel_if_needed() {
   cd "$kernel_dir"
 
   if grep -Rqs 'WireGuard secure network tunnel' net 2>/dev/null; then
-    log "WireGuard appears already integrated in kernel tree; skipping patch apply"
+    log "WireGuard already appears present in kernel tree"
+  elif [ -f "$stamp" ]; then
+    log "WireGuard patch stamp exists; assuming already applied"
   else
-    log "Applying WireGuard kernel patch"
+    log "Applying WireGuard patch"
     "$wg_dir/kernel-tree-scripts/create-patch.sh" | patch -p1
+    touch "$stamp"
   fi
 
   log "Applying kernel config fragment"
@@ -164,17 +202,14 @@ build_rom() {
 }
 
 main() {
+  require_git_identity
+  ccache -M "$CCACHE_SIZE" || true
   init_repo_if_needed
   sync_with_recovery
-
-  cd "$WORKDIR"
-  source build/envsetup.sh
-  breakfast "$DEVICE"
-
+  prepare_sources
   clone_or_update_wireguard
   patch_kernel_if_needed
   build_rom
-
   log "Build complete"
   log "Artifacts: $WORKDIR/out/target/product/$DEVICE/"
 }
