@@ -30,7 +30,7 @@ require_git_identity() {
 init_repo() {
   cd "$WORKDIR"
   log "Initializing repo"
-  repo init -u "$MANIFEST_URL" -b "$BRANCH"
+  yes | repo init --config-name -u "$MANIFEST_URL" -b "$BRANCH"
 }
 
 clear_repo_locks() {
