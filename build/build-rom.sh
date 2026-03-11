@@ -99,6 +99,32 @@ with_envsetup() {
   fi
 }
 
+
+ensure_vendor_repos() {
+  cd "$WORKDIR"
+
+  local missing_vendor=0
+  [ -f vendor/oneplus/guacamole/guacamole-vendor.mk ] || missing_vendor=1
+  [ -f vendor/oneplus/sm8150-common/sm8150-common-vendor.mk ] || missing_vendor=1
+
+  if [ "$missing_vendor" -eq 0 ]; then
+    log "Vendor makefiles already present"
+    return
+  fi
+
+  log "Adding missing vendor projects for guacamole"
+  mkdir -p .repo/local_manifests
+  cat > .repo/local_manifests/roomservice-vendor.xml <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+  <project name="LineageOS/android_vendor_oneplus_guacamole" path="vendor/oneplus/guacamole" remote="github" revision="${BRANCH}" />
+  <project name="LineageOS/android_vendor_oneplus_sm8150-common" path="vendor/oneplus/sm8150-common" remote="github" revision="${BRANCH}" />
+</manifest>
+EOF
+
+  log "Syncing vendor projects"
+  repo sync -c --no-clone-bundle --no-tags -j"$(nproc --all)" vendor/oneplus/guacamole vendor/oneplus/sm8150-common
+}
 clone_or_update_wireguard() {
   local wg_dir="/workspace/wireguard-linux-compat"
 
@@ -148,6 +174,7 @@ main() {
   ccache -M "$CCACHE_SIZE" || true
   sync_sources
   prepare_sources
+  ensure_vendor_repos
   clone_or_update_wireguard
   patch_kernel_if_needed
   build_rom
