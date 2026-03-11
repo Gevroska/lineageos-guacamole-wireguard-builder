@@ -99,6 +99,75 @@ extract_bad_projects_from_log() {
   ' "$logfile" | sort -u
 }
 
+extract_broken_repo_gitdirs_from_log() {
+  local logfile="$1"
+
+  awk '
+    /not a git repository:/ {
+      if (match($0, /\047[^\047]+\047/)) {
+        p = substr($0, RSTART + 1, RLENGTH - 2)
+        print p
+      }
+    }
+  ' "$logfile" | sort -u
+}
+
+extract_failed_project_objects_from_log() {
+  local logfile="$1"
+
+  awk '
+    /GitCommandError:/ && / on / && / failed/ {
+      if (match($0, / on [^ ]+ failed/)) {
+        p = substr($0, RSTART + 4, RLENGTH - 11)
+        print p
+      }
+    }
+  ' "$logfile" | sort -u
+}
+
+repair_repo_metadata_from_logs() {
+  local repaired_any=1
+  local logfile
+  local gitdir
+  local rel
+  local project
+
+  for logfile in "$@"; do
+    [ -f "$logfile" ] || continue
+
+    while IFS= read -r gitdir; do
+      [ -z "$gitdir" ] && continue
+      case "$gitdir" in
+        "$WORKDIR"/.repo/*)
+          if [ -e "$gitdir" ]; then
+            log "Removing broken repo metadata from log ($logfile): $gitdir"
+            rm -rf "$gitdir"
+            repaired_any=0
+          fi
+          rel="${gitdir#"$WORKDIR/.repo/projects/"}"
+          rel="${rel%.git}"
+          if [ -n "$rel" ] && [ "$rel" != "$gitdir" ] && [ -e "$WORKDIR/$rel" ]; then
+            log "Removing worktree for broken repo metadata: $rel"
+            rm -rf "$WORKDIR/$rel"
+            repaired_any=0
+          fi
+          ;;
+      esac
+    done < <(extract_broken_repo_gitdirs_from_log "$logfile")
+
+    while IFS= read -r project; do
+      [ -z "$project" ] && continue
+      if [ -e "$WORKDIR/.repo/project-objects/$project.git" ]; then
+        log "Removing broken project object metadata from log ($logfile): $project"
+        rm -rf "$WORKDIR/.repo/project-objects/$project.git"
+        repaired_any=0
+      fi
+    done < <(extract_failed_project_objects_from_log "$logfile")
+  done
+
+  return "$repaired_any"
+}
+
 find_invalid_head_projects() {
   cd "$WORKDIR"
   repo forall -c 'git rev-parse --verify -q HEAD >/dev/null || echo "$REPO_PATH"' 2>/dev/null || true
@@ -183,6 +252,14 @@ sync_with_recovery() {
     return 0
   fi
 
+  log "Checking for broken .repo metadata before retry"
+  if repair_repo_metadata_from_logs "$log1"; then
+    clear_repo_locks
+    if sync_forced_single 2>&1 | tee "$log2"; then
+      return 0
+    fi
+  fi
+
   log "Checking for projects with invalid Git HEAD before retry"
   if remove_bad_projects_from_logs "$log1"; then
     log "Removed broken projects; retrying forced single-thread sync"
@@ -211,8 +288,8 @@ sync_with_recovery() {
     return 0
   fi
 
-  log "Trying targeted removal of broken projects"
-  if remove_bad_projects_from_logs "$log1" "$log2"; then
+  log "Trying targeted metadata and project cleanup"
+  if repair_repo_metadata_from_logs "$log1" "$log2" || remove_bad_projects_from_logs "$log1" "$log2"; then
     clear_repo_locks
     sync_forced_single 2>&1 | tee "$log3"
     return 0
@@ -338,6 +415,16 @@ project external/google-fonts/fraunces: unparseable HEAD; trying to recover.
 Check that HEAD ref in .git/HEAD is valid.
 EOF
   [ "$(count_recovery_errors "$logf")" -eq 2 ]
+
+  mkdir -p "$work/.repo/projects/external/icu.git" "$work/.repo/project-objects/platform/external/icu.git" "$work/external/icu"
+  cat >"$tmp/meta.log" <<EOF
+GitCommandError: 'fetch --quiet aosp --force --prune --recurse-submodules=no --no-tags tag android-16.0.0_r4 +refs/tags/android-16.0.0_r4:refs/tags/android-16.0.0_r4' on platform/external/icu failed
+stdout: fatal: not a git repository: '$work/.repo/projects/external/icu.git'
+EOF
+  repair_repo_metadata_from_logs "$tmp/meta.log"
+  [ ! -e "$work/.repo/projects/external/icu.git" ]
+  [ ! -e "$work/.repo/project-objects/platform/external/icu.git" ]
+  [ ! -e "$work/external/icu" ]
 
   rm -rf "$tmp"
   echo "Selftests passed"
