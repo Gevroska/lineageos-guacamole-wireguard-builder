@@ -1,5 +1,3 @@
-#!/bin/sh
-[ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -10,8 +8,7 @@ CCACHE_DIR="${CCACHE_DIR:-/ccache}"
 CCACHE_SIZE="${CCACHE_SIZE:-100G}"
 JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-21-openjdk-amd64}"
 WG_REPO="${WG_REPO:-https://git.zx2c4.com/wireguard-linux-compat}"
-PREEMPTIVE_REBUILD_THRESHOLD="${PREEMPTIVE_REBUILD_THRESHOLD:-200}"
-MAX_METADATA_REPAIR_ROUNDS="${MAX_METADATA_REPAIR_ROUNDS:-6}"
+MANIFEST_URL="${MANIFEST_URL:-https://github.com/LineageOS/android.git}"
 
 export USE_CCACHE=1
 export CCACHE_DIR
@@ -26,323 +23,60 @@ log() {
 }
 
 require_git_identity() {
-  if ! git config --global user.name >/dev/null; then
-    git config --global user.name "Lineage Builder"
-  fi
-  if ! git config --global user.email >/dev/null; then
-    git config --global user.email "builder@localhost"
-  fi
+  git config --global user.name >/dev/null 2>&1 || git config --global user.name "Lineage Builder"
+  git config --global user.email >/dev/null 2>&1 || git config --global user.email "builder@localhost"
 }
 
-require_free_space_gb() {
-  local path="$1"
-  local min_gb="$2"
-  local avail_kb min_kb
-
-  avail_kb="$(df -Pk "$path" | awk 'NR==2 {print $4}')"
-  min_kb=$((min_gb * 1024 * 1024))
-
-  if [ "${avail_kb:-0}" -lt "$min_kb" ]; then
-    echo "Not enough free space on $path. Need at least ${min_gb} GB free." >&2
-    df -h "$path" >&2 || true
-    exit 1
-  fi
-}
-
-init_repo_if_needed() {
+init_repo() {
   cd "$WORKDIR"
-  if [ ! -d .repo ]; then
-    log "Initializing repo"
-    repo init -u https://github.com/LineageOS/android.git -b "$BRANCH"
-  fi
+  log "Initializing repo"
+  yes | repo init --config-name -u "$MANIFEST_URL" -b "$BRANCH"
 }
 
 clear_repo_locks() {
   cd "$WORKDIR"
+  [ -d .repo ] || return 0
   log "Clearing stale repo/git lock files"
   find .repo -type f \( -name '*.lock' -o -name 'index.lock' -o -name 'shallow.lock' \) -delete 2>/dev/null || true
 }
 
-sync_aggressive_parallel() {
+has_repo_corruption() {
   cd "$WORKDIR"
-  repo sync -c --no-clone-bundle --no-tags -j"$(nproc --all)" --force-sync --force-checkout --force-remove-dirty --fail-fast
-}
 
-sync_forced_single() {
-  cd "$WORKDIR"
-  repo sync -c --no-clone-bundle --no-tags -j1 --force-sync --force-checkout --force-remove-dirty --fail-fast
-}
+  # If any project metadata directory is missing core git markers, treat as corrupted.
+  while IFS= read -r gitdir; do
+    [ -f "$gitdir/HEAD" ] || return 0
+    [ -d "$gitdir/objects" ] || return 0
+    [ -d "$gitdir/refs" ] || return 0
+  done < <(find .repo/projects -type d -name '*.git' 2>/dev/null)
 
-count_recovery_errors() {
-  local total=0
-  local logfile
-
-  for logfile in "$@"; do
-    [ -f "$logfile" ] || continue
-    total=$((total + $(grep -E -c 'unparseable HEAD|Check that HEAD ref in \.git/HEAD is valid|not a git repository:|would be overwritten by checkout| checkout [0-9a-f]{7,}' "$logfile" || true)))
-  done
-
-  echo "$total"
-}
-
-extract_bad_projects_from_log() {
-  local logfile="$1"
-
-  awk '
-    /: unparseable HEAD; trying to recover/ {
-      sub(/^project /, "", $0)
-      sub(/: unparseable HEAD; trying to recover.*/, "", $0)
-      print
-    }
-    /^error: .*: .* checkout [0-9a-f]+$/ {
-      sub(/^error: /, "", $0)
-      sub(/: .*$/, "", $0)
-      print
-    }
-  ' "$logfile" | sort -u
-}
-
-extract_broken_repo_gitdirs_from_log() {
-  local logfile="$1"
-
-  awk '
-    /not a git repository:/ {
-      if (match($0, /\047[^\047]+\047/)) {
-        p = substr($0, RSTART + 1, RLENGTH - 2)
-        print p
-      }
-    }
-  ' "$logfile" | sort -u
-}
-
-extract_failed_project_objects_from_log() {
-  local logfile="$1"
-
-  awk '
-    /GitCommandError:/ && / on / && / failed/ {
-      if (match($0, / on [^ ]+ failed/)) {
-        p = substr($0, RSTART + 4, RLENGTH - 11)
-        print p
-      }
-    }
-  ' "$logfile" | sort -u
-}
-
-repair_repo_metadata_from_logs() {
-  local repaired_any=1
-  local logfile
-  local gitdir
-  local rel
-  local project
-
-  for logfile in "$@"; do
-    [ -f "$logfile" ] || continue
-
-    while IFS= read -r gitdir; do
-      [ -z "$gitdir" ] && continue
-      case "$gitdir" in
-        "$WORKDIR"/.repo/*)
-          if [ -e "$gitdir" ]; then
-            log "Removing broken repo metadata from log ($logfile): $gitdir"
-            rm -rf "$gitdir"
-            repaired_any=0
-          fi
-          rel="${gitdir#"$WORKDIR/.repo/projects/"}"
-          rel="${rel%.git}"
-          if [ -n "$rel" ] && [ "$rel" != "$gitdir" ] && [ -e "$WORKDIR/$rel" ]; then
-            log "Removing worktree for broken repo metadata: $rel"
-            rm -rf "$WORKDIR/$rel"
-            repaired_any=0
-          fi
-          ;;
-      esac
-    done < <(extract_broken_repo_gitdirs_from_log "$logfile")
-
-    while IFS= read -r project; do
-      [ -z "$project" ] && continue
-      if [ -e "$WORKDIR/.repo/project-objects/$project.git" ]; then
-        log "Removing broken project object metadata from log ($logfile): $project"
-        rm -rf "$WORKDIR/.repo/project-objects/$project.git"
-        repaired_any=0
-      fi
-    done < <(extract_failed_project_objects_from_log "$logfile")
-  done
-
-  return "$repaired_any"
-}
-
-sync_projects_after_metadata_repair() {
-  local projects=()
-  local project
-  local gitdir
-  local rel
-  local logfile
-
-  for logfile in "$@"; do
-    [ -f "$logfile" ] || continue
-
-    while IFS= read -r gitdir; do
-      [ -z "$gitdir" ] && continue
-      rel="${gitdir#"$WORKDIR/.repo/projects/"}"
-      rel="${rel%.git}"
-      [ -z "$rel" ] && continue
-      [ "$rel" = "$gitdir" ] && continue
-      projects+=("$rel")
-    done < <(extract_broken_repo_gitdirs_from_log "$logfile")
-
-    while IFS= read -r project; do
-      [ -z "$project" ] && continue
-      projects+=("${project#platform/}")
-    done < <(extract_failed_project_objects_from_log "$logfile")
-  done
-
-  mapfile -t projects < <(printf '%s\n' "${projects[@]}" | sed '/^$/d' | sort -u)
-  [ "${#projects[@]}" -gt 0 ] || return 1
-
-  log "Resyncing repaired projects first: ${projects[*]}"
-  cd "$WORKDIR"
-  repo sync -c --no-clone-bundle --no-tags -j1 --force-sync --force-checkout --force-remove-dirty --fail-fast "${projects[@]}"
-}
-
-find_invalid_head_projects() {
-  cd "$WORKDIR"
-  repo forall -c 'git rev-parse --verify -q HEAD >/dev/null || echo "$REPO_PATH"' 2>/dev/null || true
-}
-
-remove_bad_projects_from_logs() {
-  local removed_any=1
-  local proj
-  local logfile
-
-  for logfile in "$@"; do
-    [ -f "$logfile" ] || continue
-    while IFS= read -r proj; do
-      [ -z "$proj" ] && continue
-      if [ -e "$WORKDIR/$proj" ]; then
-        log "Removing broken project from log ($logfile): $proj"
-        rm -rf "$WORKDIR/$proj"
-        removed_any=0
-      fi
-    done < <(extract_bad_projects_from_log "$logfile")
-  done
-
-  while IFS= read -r proj; do
-    [ -z "$proj" ] && continue
-    if [ -e "$WORKDIR/$proj" ]; then
-      log "Removing project with invalid HEAD: $proj"
-      rm -rf "$WORKDIR/$proj"
-      removed_any=0
-    fi
-  done < <(find_invalid_head_projects)
-
-  return "$removed_any"
-}
-
-preflight_repair_corrupt_projects() {
-  local invalid_projects=()
-  local invalid_count=0
-  local proj
-
-  mapfile -t invalid_projects < <(find_invalid_head_projects | sed '/^$/d' | sort -u)
-  invalid_count="${#invalid_projects[@]}"
-
-  if [ "$invalid_count" -eq 0 ]; then
+  # If any checked-out project has an invalid HEAD, treat as corrupted.
+  if repo forall -c 'git rev-parse --verify -q HEAD >/dev/null || echo "$REPO_PATH"' 2>/dev/null | grep -q .; then
     return 0
   fi
 
-  log "Preflight detected $invalid_count projects with invalid Git HEAD"
-  if [ "$invalid_count" -ge "$PREEMPTIVE_REBUILD_THRESHOLD" ]; then
-    log "Invalid HEAD count >= $PREEMPTIVE_REBUILD_THRESHOLD; wiping worktrees before sync"
-    wipe_worktrees_but_keep_repo
-    return 0
-  fi
-
-  for proj in "${invalid_projects[@]}"; do
-    if [ -e "$WORKDIR/$proj" ]; then
-      log "Preflight removing invalid-HEAD project: $proj"
-      rm -rf "$WORKDIR/$proj"
-    fi
-  done
+  return 1
 }
 
-wipe_worktrees_but_keep_repo() {
+wipe_and_reinit_repo() {
+  log "Repo corruption detected. Removing source tree and doing a full resync"
+  rm -rf "$WORKDIR"
+  mkdir -p "$WORKDIR"
+  init_repo
+}
+
+sync_sources() {
   cd "$WORKDIR"
-  log "Wiping all working trees but keeping .repo"
-  find . -mindepth 1 -maxdepth 1 ! -name .repo -exec rm -rf {} +
-}
-
-sync_with_recovery() {
-  local log1="/tmp/repo-sync-normal.log"
-  local log2="/tmp/repo-sync-recovery.log"
-  local log3="/tmp/repo-sync-rebuild.log"
-  local errcount=0
-
-  require_free_space_gb /workspace 120
-
-  clear_repo_locks
-  preflight_repair_corrupt_projects
   clear_repo_locks
 
-  log "Running aggressive repo sync"
-  if sync_aggressive_parallel 2>&1 | tee "$log1"; then
-    return 0
+  if has_repo_corruption; then
+    wipe_and_reinit_repo
+  elif [ ! -d .repo ]; then
+    init_repo
   fi
 
-  log "Checking for broken .repo metadata before retry"
-  local round
-  local repair_source_log="$log1"
-  for round in $(seq 1 "$MAX_METADATA_REPAIR_ROUNDS"); do
-    if ! repair_repo_metadata_from_logs "$repair_source_log"; then
-      break
-    fi
-    log "Metadata repair round $round/$MAX_METADATA_REPAIR_ROUNDS"
-    clear_repo_locks
-    sync_projects_after_metadata_repair "$repair_source_log" || true
-    if sync_forced_single 2>&1 | tee "$log2"; then
-      return 0
-    fi
-    repair_source_log="$log2"
-  done
-
-  log "Checking for projects with invalid Git HEAD before retry"
-  if remove_bad_projects_from_logs "$log1"; then
-    log "Removed broken projects; retrying forced single-thread sync"
-    clear_repo_locks
-    if sync_forced_single 2>&1 | tee "$log2"; then
-      return 0
-    fi
-  fi
-
-  clear_repo_locks
-
-  log "Aggressive sync failed; running forced single-thread recovery sync"
-  if sync_forced_single 2>&1 | tee "$log2"; then
-    return 0
-  fi
-
-  errcount="$(count_recovery_errors "$log1" "$log2")"
-  log "Recovery sync error count: $errcount"
-
-  if [ "${errcount:-0}" -ge 20 ]; then
-    log "Too many broken repos detected; rebuilding working tree from .repo"
-    wipe_worktrees_but_keep_repo
-    require_free_space_gb /workspace 120
-    clear_repo_locks
-    sync_forced_single 2>&1 | tee "$log3"
-    return 0
-  fi
-
-  log "Trying targeted metadata and project cleanup"
-  if repair_repo_metadata_from_logs "$log1" "$log2" || remove_bad_projects_from_logs "$log1" "$log2"; then
-    clear_repo_locks
-    sync_projects_after_metadata_repair "$log1" "$log2" || true
-    sync_forced_single 2>&1 | tee "$log3"
-    return 0
-  fi
-
-  echo "repo sync failed and recovery could not fix it." >&2
-  echo "Logs: $log1 $log2 $log3" >&2
-  exit 1
+  log "Running repo sync"
+  repo sync -c --no-clone-bundle --no-tags -j"$(nproc --all)" --force-sync --force-checkout --force-remove-dirty
 }
 
 prepare_sources() {
@@ -369,10 +103,7 @@ patch_kernel_if_needed() {
   local wg_dir="/workspace/wireguard-linux-compat"
   local stamp="$WORKDIR/.wg_patch_applied"
 
-  if [ ! -d "$kernel_dir" ]; then
-    echo "Kernel tree not found: $kernel_dir" >&2
-    exit 1
-  fi
+  [ -d "$kernel_dir" ] || { echo "Kernel tree not found: $kernel_dir" >&2; exit 1; }
 
   cd "$kernel_dir"
 
@@ -402,8 +133,7 @@ build_rom() {
 main() {
   require_git_identity
   ccache -M "$CCACHE_SIZE" || true
-  init_repo_if_needed
-  sync_with_recovery
+  sync_sources
   prepare_sources
   clone_or_update_wireguard
   patch_kernel_if_needed
@@ -412,91 +142,4 @@ main() {
   log "Artifacts: $WORKDIR/out/target/product/$DEVICE/"
 }
 
-run_selftests() {
-  local tmp
-  local work
-  local bin
-  local logf
-
-  tmp="$(mktemp -d)"
-  work="$tmp/work"
-  bin="$tmp/bin"
-  mkdir -p "$work/.repo" "$work/external/a" "$work/external/b" "$work/external/c" "$bin"
-
-  cat >"$bin/repo" <<'EOF'
-#!/usr/bin/env bash
-set -e
-if [ "$1" = "forall" ]; then
-  printf '%s\n' "${MOCK_REPO_FORALL_OUTPUT:-}"
-  exit 0
-fi
-if [ "$1" = "sync" ]; then
-  printf '%s\n' "$*" >> "${MOCK_REPO_SYNC_ARGS_FILE:-/dev/null}"
-  exit 0
-fi
-exit 0
-EOF
-  chmod +x "$bin/repo"
-
-  PATH="$bin:$PATH"
-  WORKDIR="$work"
-  export MOCK_REPO_SYNC_ARGS_FILE="$tmp/sync_args.log"
-
-  MOCK_REPO_FORALL_OUTPUT=$'external/a
-external/b' PREEMPTIVE_REBUILD_THRESHOLD=10 preflight_repair_corrupt_projects
-  [ ! -e "$work/external/a" ]
-  [ ! -e "$work/external/b" ]
-
-  mkdir -p "$work/external/d" "$work/external/e"
-  MOCK_REPO_FORALL_OUTPUT=$'external/c
-external/d
-external/e' PREEMPTIVE_REBUILD_THRESHOLD=3 preflight_repair_corrupt_projects
-  [ -d "$work/.repo" ]
-  [ ! -e "$work/external/c" ]
-  [ ! -e "$work/external/d" ]
-  [ ! -e "$work/external/e" ]
-
-  logf="$tmp/recovery.log"
-  cat >"$logf" <<'EOF'
-project external/google-fonts/fraunces: unparseable HEAD; trying to recover.
-Check that HEAD ref in .git/HEAD is valid.
-EOF
-  [ "$(count_recovery_errors "$logf")" -eq 2 ]
-
-  cat >"$tmp/notgit.log" <<EOF
-stdout: fatal: not a git repository: '$work/.repo/projects/external/ims.git'
-EOF
-  [ "$(count_recovery_errors "$tmp/notgit.log")" -eq 1 ]
-
-  mkdir -p "$work/.repo/projects/external/icu.git" "$work/.repo/project-objects/platform/external/icu.git" "$work/external/icu"
-  cat >"$tmp/meta.log" <<EOF
-GitCommandError: 'fetch --quiet aosp --force --prune --recurse-submodules=no --no-tags tag android-16.0.0_r4 +refs/tags/android-16.0.0_r4:refs/tags/android-16.0.0_r4' on platform/external/icu failed
-stdout: fatal: not a git repository: '$work/.repo/projects/external/icu.git'
-EOF
-  repair_repo_metadata_from_logs "$tmp/meta.log"
-  [ ! -e "$work/.repo/projects/external/icu.git" ]
-  [ ! -e "$work/.repo/project-objects/platform/external/icu.git" ]
-  [ ! -e "$work/external/icu" ]
-
-  sync_projects_after_metadata_repair "$tmp/meta.log"
-  grep -q "external/icu" "$tmp/sync_args.log"
-
-  cat >"$tmp/meta2.log" <<EOF
-GitCommandError: 'fetch' on platform/external/ims failed
-stdout: fatal: not a git repository: '$work/.repo/projects/external/ims.git'
-EOF
-  sync_projects_after_metadata_repair "$tmp/meta.log" "$tmp/meta2.log"
-  grep -q "external/ims" "$tmp/sync_args.log"
-
-  rm -rf "$tmp"
-  echo "Selftests passed"
-}
-
-if [ "${BUILD_ROM_SH_SELFTEST:-0}" = "1" ]; then
-  run_selftests
-  exit 0
-fi
-
-if [ "${BUILD_ROM_SH_LIB_ONLY:-0}" != "1" ]; then
-  main "$@"
-fi
+main "$@"
