@@ -11,6 +11,7 @@ CCACHE_SIZE="${CCACHE_SIZE:-100G}"
 JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-21-openjdk-amd64}"
 WG_REPO="${WG_REPO:-https://git.zx2c4.com/wireguard-linux-compat}"
 PREEMPTIVE_REBUILD_THRESHOLD="${PREEMPTIVE_REBUILD_THRESHOLD:-200}"
+MAX_METADATA_REPAIR_ROUNDS="${MAX_METADATA_REPAIR_ROUNDS:-6}"
 
 export USE_CCACHE=1
 export CCACHE_DIR
@@ -78,7 +79,7 @@ count_recovery_errors() {
 
   for logfile in "$@"; do
     [ -f "$logfile" ] || continue
-    total=$((total + $(grep -E -c 'unparseable HEAD|Check that HEAD ref in \.git/HEAD is valid|would be overwritten by checkout| checkout [0-9a-f]{7,}' "$logfile" || true)))
+    total=$((total + $(grep -E -c 'unparseable HEAD|Check that HEAD ref in \.git/HEAD is valid|not a git repository:|would be overwritten by checkout| checkout [0-9a-f]{7,}' "$logfile" || true)))
   done
 
   echo "$total"
@@ -171,25 +172,29 @@ repair_repo_metadata_from_logs() {
 }
 
 sync_projects_after_metadata_repair() {
-  local logfile="$1"
   local projects=()
   local project
   local gitdir
   local rel
+  local logfile
 
-  while IFS= read -r gitdir; do
-    [ -z "$gitdir" ] && continue
-    rel="${gitdir#"$WORKDIR/.repo/projects/"}"
-    rel="${rel%.git}"
-    [ -z "$rel" ] && continue
-    [ "$rel" = "$gitdir" ] && continue
-    projects+=("$rel")
-  done < <(extract_broken_repo_gitdirs_from_log "$logfile")
+  for logfile in "$@"; do
+    [ -f "$logfile" ] || continue
 
-  while IFS= read -r project; do
-    [ -z "$project" ] && continue
-    projects+=("${project#platform/}")
-  done < <(extract_failed_project_objects_from_log "$logfile")
+    while IFS= read -r gitdir; do
+      [ -z "$gitdir" ] && continue
+      rel="${gitdir#"$WORKDIR/.repo/projects/"}"
+      rel="${rel%.git}"
+      [ -z "$rel" ] && continue
+      [ "$rel" = "$gitdir" ] && continue
+      projects+=("$rel")
+    done < <(extract_broken_repo_gitdirs_from_log "$logfile")
+
+    while IFS= read -r project; do
+      [ -z "$project" ] && continue
+      projects+=("${project#platform/}")
+    done < <(extract_failed_project_objects_from_log "$logfile")
+  done
 
   mapfile -t projects < <(printf '%s\n' "${projects[@]}" | sed '/^$/d' | sort -u)
   [ "${#projects[@]}" -gt 0 ] || return 1
@@ -284,13 +289,20 @@ sync_with_recovery() {
   fi
 
   log "Checking for broken .repo metadata before retry"
-  if repair_repo_metadata_from_logs "$log1"; then
+  local round
+  local repair_source_log="$log1"
+  for round in $(seq 1 "$MAX_METADATA_REPAIR_ROUNDS"); do
+    if ! repair_repo_metadata_from_logs "$repair_source_log"; then
+      break
+    fi
+    log "Metadata repair round $round/$MAX_METADATA_REPAIR_ROUNDS"
     clear_repo_locks
-    sync_projects_after_metadata_repair "$log1" || true
+    sync_projects_after_metadata_repair "$repair_source_log" || true
     if sync_forced_single 2>&1 | tee "$log2"; then
       return 0
     fi
-  fi
+    repair_source_log="$log2"
+  done
 
   log "Checking for projects with invalid Git HEAD before retry"
   if remove_bad_projects_from_logs "$log1"; then
@@ -323,6 +335,7 @@ sync_with_recovery() {
   log "Trying targeted metadata and project cleanup"
   if repair_repo_metadata_from_logs "$log1" "$log2" || remove_bad_projects_from_logs "$log1" "$log2"; then
     clear_repo_locks
+    sync_projects_after_metadata_repair "$log1" "$log2" || true
     sync_forced_single 2>&1 | tee "$log3"
     return 0
   fi
@@ -450,6 +463,11 @@ Check that HEAD ref in .git/HEAD is valid.
 EOF
   [ "$(count_recovery_errors "$logf")" -eq 2 ]
 
+  cat >"$tmp/notgit.log" <<EOF
+stdout: fatal: not a git repository: '$work/.repo/projects/external/ims.git'
+EOF
+  [ "$(count_recovery_errors "$tmp/notgit.log")" -eq 1 ]
+
   mkdir -p "$work/.repo/projects/external/icu.git" "$work/.repo/project-objects/platform/external/icu.git" "$work/external/icu"
   cat >"$tmp/meta.log" <<EOF
 GitCommandError: 'fetch --quiet aosp --force --prune --recurse-submodules=no --no-tags tag android-16.0.0_r4 +refs/tags/android-16.0.0_r4:refs/tags/android-16.0.0_r4' on platform/external/icu failed
@@ -462,6 +480,13 @@ EOF
 
   sync_projects_after_metadata_repair "$tmp/meta.log"
   grep -q "external/icu" "$tmp/sync_args.log"
+
+  cat >"$tmp/meta2.log" <<EOF
+GitCommandError: 'fetch' on platform/external/ims failed
+stdout: fatal: not a git repository: '$work/.repo/projects/external/ims.git'
+EOF
+  sync_projects_after_metadata_repair "$tmp/meta.log" "$tmp/meta2.log"
+  grep -q "external/ims" "$tmp/sync_args.log"
 
   rm -rf "$tmp"
   echo "Selftests passed"
