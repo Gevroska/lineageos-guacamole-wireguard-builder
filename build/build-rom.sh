@@ -81,8 +81,22 @@ sync_sources() {
 
 prepare_sources() {
   cd "$WORKDIR"
+  with_envsetup breakfast "$DEVICE"
+}
+
+with_envsetup() {
+  local had_nounset=0
+  if [[ $- == *u* ]]; then
+    had_nounset=1
+    set +u
+  fi
+
   source build/envsetup.sh
-  breakfast "$DEVICE"
+  "$@"
+
+  if [ "$had_nounset" -eq 1 ]; then
+    set -u
+  fi
 }
 
 clone_or_update_wireguard() {
@@ -125,9 +139,8 @@ patch_kernel_if_needed() {
 
 build_rom() {
   cd "$WORKDIR"
-  source build/envsetup.sh
-  breakfast "$DEVICE"
-  brunch "$DEVICE"
+  with_envsetup breakfast "$DEVICE"
+  with_envsetup brunch "$DEVICE"
 }
 
 main() {
