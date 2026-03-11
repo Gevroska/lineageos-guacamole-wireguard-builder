@@ -112,13 +112,13 @@ ensure_vendor_repos() {
     return
   fi
 
-  log "Adding missing vendor projects for guacamole"
+  log "Adding missing vendor projects for guacamole (TheMuppets)"
   mkdir -p .repo/local_manifests
   cat > .repo/local_manifests/roomservice-vendor.xml <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <manifest>
-  <project name="LineageOS/android_vendor_oneplus_guacamole" path="vendor/oneplus/guacamole" remote="github" revision="${BRANCH}" />
-  <project name="LineageOS/android_vendor_oneplus_sm8150-common" path="vendor/oneplus/sm8150-common" remote="github" revision="${BRANCH}" />
+  <project name="TheMuppets/proprietary_vendor_oneplus_guacamole" path="vendor/oneplus/guacamole" remote="github" revision="${BRANCH}" />
+  <project name="TheMuppets/proprietary_vendor_oneplus_sm8150-common" path="vendor/oneplus/sm8150-common" remote="github" revision="${BRANCH}" />
 </manifest>
 EOF
 
@@ -173,8 +173,8 @@ main() {
   require_git_identity
   ccache -M "$CCACHE_SIZE" || true
   sync_sources
-  prepare_sources
   ensure_vendor_repos
+  prepare_sources
   clone_or_update_wireguard
   patch_kernel_if_needed
   build_rom
