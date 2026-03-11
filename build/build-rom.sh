@@ -65,6 +65,20 @@ wipe_and_reinit_repo() {
   init_repo
 }
 
+write_vendor_local_manifest() {
+  cd "$WORKDIR"
+  [ -d .repo ] || return 0
+
+  mkdir -p .repo/local_manifests
+  cat > .repo/local_manifests/roomservice-vendor.xml <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+  <project name="TheMuppets/proprietary_vendor_oneplus_guacamole" path="vendor/oneplus/guacamole" remote="github" revision="${BRANCH}" />
+  <project name="TheMuppets/proprietary_vendor_oneplus_sm8150-common" path="vendor/oneplus/sm8150-common" remote="github" revision="${BRANCH}" />
+</manifest>
+EOF
+}
+
 sync_sources() {
   cd "$WORKDIR"
   clear_repo_locks
@@ -74,6 +88,10 @@ sync_sources() {
   elif [ ! -d .repo ]; then
     init_repo
   fi
+
+  # Keep vendor project remotes stable before a full-tree sync, so stale local manifests
+  # don't keep pointing at unavailable/private repository namespaces.
+  write_vendor_local_manifest
 
   log "Running repo sync"
   repo sync -c --no-clone-bundle --no-tags -j"$(nproc --all)" --force-sync --force-checkout --force-remove-dirty
@@ -112,15 +130,8 @@ ensure_vendor_repos() {
     return
   fi
 
-  log "Adding missing vendor projects for guacamole"
-  mkdir -p .repo/local_manifests
-  cat > .repo/local_manifests/roomservice-vendor.xml <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<manifest>
-  <project name="LineageOS/android_vendor_oneplus_guacamole" path="vendor/oneplus/guacamole" remote="github" revision="${BRANCH}" />
-  <project name="LineageOS/android_vendor_oneplus_sm8150-common" path="vendor/oneplus/sm8150-common" remote="github" revision="${BRANCH}" />
-</manifest>
-EOF
+  log "Adding missing vendor projects for guacamole (TheMuppets)"
+  write_vendor_local_manifest
 
   log "Syncing vendor projects"
   repo sync -c --no-clone-bundle --no-tags -j"$(nproc --all)" vendor/oneplus/guacamole vendor/oneplus/sm8150-common
@@ -173,8 +184,8 @@ main() {
   require_git_identity
   ccache -M "$CCACHE_SIZE" || true
   sync_sources
-  prepare_sources
   ensure_vendor_repos
+  prepare_sources
   clone_or_update_wireguard
   patch_kernel_if_needed
   build_rom
