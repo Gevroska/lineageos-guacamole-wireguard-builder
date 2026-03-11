@@ -60,7 +60,7 @@ sync_normal() {
 
 sync_forced_single() {
   cd "$WORKDIR"
-  repo sync -c --no-clone-bundle --no-tags -j1 --force-sync --force-checkout --fail-fast
+  repo sync -c --no-clone-bundle --no-tags -j1 --force-sync --force-checkout --force-remove-dirty --fail-fast
 }
 
 count_recovery_errors() {
@@ -69,7 +69,7 @@ count_recovery_errors() {
 
   for logfile in "$@"; do
     [ -f "$logfile" ] || continue
-    total=$((total + $(grep -E -c 'unparseable HEAD|would be overwritten by checkout| checkout [0-9a-f]{7,}' "$logfile" || true)))
+    total=$((total + $(grep -E -c 'unparseable HEAD|Check that HEAD ref in \.git/HEAD is valid|would be overwritten by checkout| checkout [0-9a-f]{7,}' "$logfile" || true)))
   done
 
   echo "$total"
@@ -143,6 +143,14 @@ sync_with_recovery() {
   log "Running normal repo sync"
   if sync_normal 2>&1 | tee "$log1"; then
     return 0
+  fi
+
+  log "Checking for projects with invalid Git HEAD before retry"
+  if remove_bad_projects_from_logs "$log1"; then
+    log "Removed broken projects; retrying forced single-thread sync"
+    if sync_forced_single 2>&1 | tee "$log2"; then
+      return 0
+    fi
   fi
 
   log "Normal sync failed; running forced single-thread recovery sync"
