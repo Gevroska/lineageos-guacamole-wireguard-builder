@@ -53,9 +53,15 @@ init_repo_if_needed() {
   fi
 }
 
-sync_normal() {
+clear_repo_locks() {
   cd "$WORKDIR"
-  repo sync -c --no-clone-bundle --no-tags -j"$(nproc --all)"
+  log "Clearing stale repo/git lock files"
+  find .repo -type f \( -name '*.lock' -o -name 'index.lock' -o -name 'shallow.lock' \) -delete 2>/dev/null || true
+}
+
+sync_aggressive_parallel() {
+  cd "$WORKDIR"
+  repo sync -c --no-clone-bundle --no-tags -j"$(nproc --all)" --force-sync --force-checkout --force-remove-dirty
 }
 
 sync_forced_single() {
@@ -140,20 +146,25 @@ sync_with_recovery() {
 
   require_free_space_gb /workspace 120
 
-  log "Running normal repo sync"
-  if sync_normal 2>&1 | tee "$log1"; then
+  clear_repo_locks
+
+  log "Running aggressive repo sync"
+  if sync_aggressive_parallel 2>&1 | tee "$log1"; then
     return 0
   fi
 
   log "Checking for projects with invalid Git HEAD before retry"
   if remove_bad_projects_from_logs "$log1"; then
     log "Removed broken projects; retrying forced single-thread sync"
+    clear_repo_locks
     if sync_forced_single 2>&1 | tee "$log2"; then
       return 0
     fi
   fi
 
-  log "Normal sync failed; running forced single-thread recovery sync"
+  clear_repo_locks
+
+  log "Aggressive sync failed; running forced single-thread recovery sync"
   if sync_forced_single 2>&1 | tee "$log2"; then
     return 0
   fi
@@ -165,12 +176,14 @@ sync_with_recovery() {
     log "Too many broken repos detected; rebuilding working tree from .repo"
     wipe_worktrees_but_keep_repo
     require_free_space_gb /workspace 120
+    clear_repo_locks
     sync_forced_single 2>&1 | tee "$log3"
     return 0
   fi
 
   log "Trying targeted removal of broken projects"
   if remove_bad_projects_from_logs "$log1" "$log2"; then
+    clear_repo_locks
     sync_forced_single 2>&1 | tee "$log3"
     return 0
   fi
