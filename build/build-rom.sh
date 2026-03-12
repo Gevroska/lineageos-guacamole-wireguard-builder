@@ -202,6 +202,7 @@ main() {
   ccache -M "$CCACHE_SIZE" || true
   sync_sources
   ensure_vendor_repos
+  prepare_sources
   clone_or_update_wireguard
   patch_kernel_if_needed
   build_rom
