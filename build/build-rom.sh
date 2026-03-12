@@ -6,6 +6,7 @@ DEVICE="${DEVICE:-guacamole}"
 WORKDIR="${WORKDIR:-/workspace/android}"
 CCACHE_DIR="${CCACHE_DIR:-/ccache}"
 CCACHE_SIZE="${CCACHE_SIZE:-100G}"
+BUILD_JOBS="${BUILD_JOBS:-}"
 JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-21-openjdk-amd64}"
 WG_REPO="${WG_REPO:-https://git.zx2c4.com/wireguard-linux-compat}"
 MANIFEST_URL="${MANIFEST_URL:-https://github.com/LineageOS/android.git}"
@@ -97,9 +98,18 @@ sync_sources() {
   repo sync -c --no-clone-bundle --no-tags -j"$(nproc --all)" --force-sync --force-checkout --force-remove-dirty
 }
 
-prepare_sources() {
-  cd "$WORKDIR"
-  with_envsetup breakfast "$DEVICE"
+detect_build_jobs() {
+  # Build parallelism is intentionally simple:
+  # - if BUILD_JOBS is set, use it as-is
+  # - otherwise, use all detected CPU threads
+  # Memory-based auto-throttling was removed by design; size RAM/swap on the host instead.
+  if [ -n "${BUILD_JOBS}" ]; then
+    log "Using build parallelism from BUILD_JOBS: -j${BUILD_JOBS}"
+    return
+  fi
+
+  BUILD_JOBS="$(nproc --all)"
+  log "Using build parallelism: -j${BUILD_JOBS}"
 }
 
 with_envsetup() {
@@ -176,8 +186,9 @@ patch_kernel_if_needed() {
 
 build_rom() {
   cd "$WORKDIR"
-  with_envsetup breakfast "$DEVICE"
-  with_envsetup brunch "$DEVICE"
+  detect_build_jobs
+  export NINJA_ARGS="-j${BUILD_JOBS}"
+  with_envsetup brunch "$DEVICE" "-j${BUILD_JOBS}"
 }
 
 main() {
