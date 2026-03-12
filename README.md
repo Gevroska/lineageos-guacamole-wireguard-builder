@@ -73,6 +73,28 @@ sudo chown -R 1000:1000 /srv/lineage-guacamole
 
 Use whichever path layout you prefer, but keep the mounts persistent.
 
+Docker Compose automatically reads a `.env` file in the repo root. Using one is recommended if you want to override build settings (branch/device/workdir/ccache/java/wireguard URL) without editing `compose.yaml`.
+
+Example `.env` (same keys as the defaults):
+
+```dotenv
+BRANCH=lineage-23.2
+DEVICE=guacamole
+WORKDIR=/workspace/android
+CCACHE_DIR=/ccache
+CCACHE_SIZE=250G
+JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+WG_REPO=https://git.zx2c4.com/wireguard-linux-compat
+# optional
+# BUILD_JOBS=8
+```
+
+You can create it quickly with:
+
+```bash
+cp .env.example .env
+```
+
 ## Host requirements
 
 For reliable LineageOS 23.2 builds, use at least:
@@ -89,29 +111,39 @@ The build script no longer uses RAM-based heuristics to decide `-j`.
 - If `BUILD_JOBS` is set, that exact value is used.
 - If `BUILD_JOBS` is not set, the script uses all CPU threads (`nproc --all`).
 
-Example override:
+Example overrides:
 
 ```bash
-BUILD_JOBS=8 /home/builder/build/build-rom.sh
+# docker run: set BUILD_JOBS at runtime
+docker run --rm -it \
+  -e BUILD_JOBS=8 \
+  -v "$PWD/workspace:/workspace" \
+  -v "$PWD/ccache:/ccache" \
+  ghcr.io/gevroska/lineageos-guacamole-wireguard-builder
+```
+
+```bash
+# docker compose: set BUILD_JOBS in .env (or export it)
+echo "BUILD_JOBS=8" >> .env
+docker compose up --build
 ```
 
 ## Quick start (prebuilt image)
 
-Run the build script from the prebuilt image:
+Run the prebuilt image (the build script starts automatically, streams logs to stdout/stderr, and the container exits when done):
 
 ```bash
 docker run --rm -it \
   -v "$PWD/workspace:/workspace" \
   -v "$PWD/ccache:/ccache" \
-  ghcr.io/gevroska/lineageos-guacamole-wireguard-builder \
-  /home/builder/build/build-rom.sh
+  ghcr.io/gevroska/lineageos-guacamole-wireguard-builder
 ```
 
 First build typically takes 1-3 hours depending on CPU/RAM.
 
 ## Build from source (advanced)
 
-If you want to customize the image or scripts, build from source and run the same mounted volumes:
+If you want to customize the image or scripts, build from source and run it with the same mounted volumes (no manual command needed):
 
 ```bash
 git clone https://github.com/gevroska/lineageos-guacamole-wireguard-builder.git
@@ -121,6 +153,5 @@ docker build -t lineageos-guacamole-wireguard-builder .
 docker run --rm -it \
   -v "$PWD/workspace:/workspace" \
   -v "$PWD/ccache:/ccache" \
-  lineageos-guacamole-wireguard-builder \
-  /home/builder/build/build-rom.sh
+  lineageos-guacamole-wireguard-builder
 ```

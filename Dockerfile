@@ -73,4 +73,4 @@ ENV CCACHE_DIR=/ccache
 ENV CCACHE_EXEC=/usr/bin/ccache
 ENV PATH=/home/builder/bin:$PATH
 
-CMD ["/bin/bash", "-lc", "sleep infinity"]
+CMD ["/home/builder/build/build-rom.sh"]
