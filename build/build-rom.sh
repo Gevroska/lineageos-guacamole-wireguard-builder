@@ -194,7 +194,7 @@ build_rom() {
   cd "$WORKDIR"
   detect_build_jobs
   export NINJA_ARGS="-j${BUILD_JOBS}"
-  with_envsetup brunch "$DEVICE" "-j${BUILD_JOBS}"
+  with_envsetup brunch "$DEVICE"
 }
 
 main() {
