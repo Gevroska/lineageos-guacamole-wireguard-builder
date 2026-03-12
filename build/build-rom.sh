@@ -5,7 +5,7 @@ BRANCH="${BRANCH:-lineage-23.2}"
 DEVICE="${DEVICE:-guacamole}"
 WORKDIR="${WORKDIR:-/workspace/android}"
 CCACHE_DIR="${CCACHE_DIR:-/ccache}"
-CCACHE_SIZE="${CCACHE_SIZE:-100G}"
+CCACHE_SIZE="${CCACHE_SIZE:-250G}"
 BUILD_JOBS="${BUILD_JOBS:-}"
 JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-21-openjdk-amd64}"
 WG_REPO="${WG_REPO:-https://git.zx2c4.com/wireguard-linux-compat}"
@@ -199,6 +199,8 @@ build_rom() {
 
 main() {
   require_git_identity
+  log "Disabling ccache compression"
+  ccache --set-config compression=false || true
   ccache -M "$CCACHE_SIZE" || true
   sync_sources
   ensure_vendor_repos
