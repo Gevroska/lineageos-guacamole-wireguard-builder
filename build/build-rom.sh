@@ -112,6 +112,12 @@ detect_build_jobs() {
   log "Using build parallelism: -j${BUILD_JOBS}"
 }
 
+# Backward-compatibility shim: older script revisions invoked prepare_sources() in main.
+# Keep a no-op implementation so mixed/stale script copies fail safe instead of aborting.
+prepare_sources() {
+  log "prepare_sources is deprecated and now a no-op"
+}
+
 with_envsetup() {
   local had_nounset=0
   if [[ $- == *u* ]]; then
