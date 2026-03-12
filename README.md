@@ -73,6 +73,28 @@ sudo chown -R 1000:1000 /srv/lineage-guacamole
 
 Use whichever path layout you prefer, but keep the mounts persistent.
 
+## Host requirements
+
+For reliable LineageOS 23.2 builds, use at least:
+
+- **24 GB RAM**
+- **Swap enabled/increased** (recommended: at least 16 GB swap; 24+ GB is safer for heavy Soong phases)
+
+Lower-memory hosts may hit OOM (`Killed`) during Soong bootstrap.
+
+### Build parallelism behavior (clarified)
+
+The build script no longer uses RAM-based heuristics to decide `-j`.
+
+- If `BUILD_JOBS` is set, that exact value is used.
+- If `BUILD_JOBS` is not set, the script uses all CPU threads (`nproc --all`).
+
+Example override:
+
+```bash
+BUILD_JOBS=8 /home/builder/build/build-rom.sh
+```
+
 ## Quick start (prebuilt image)
 
 Run the build script from the prebuilt image:
