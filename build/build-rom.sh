@@ -151,9 +151,12 @@ fix_guacamole_logo_sha1() {
 
   # The vendor blob set occasionally republishes LOGO.img with a different hash
   # while keeping the same filename. Keep Android.mk in sync to avoid kati aborting.
-  if grep -q "vendor/oneplus/guacamole/radio/LOGO\.img" "$mk_file"; then
+  # Match both common formats:
+  #   - radio/LOGO.img
+  #   - vendor/oneplus/guacamole/radio/LOGO.img
+  if grep -Eq "(^|[[:space:],])((vendor/oneplus/guacamole/)?radio/)?LOGO\.img([[:space:],]|$)" "$mk_file"; then
     local expected_sha1
-    expected_sha1="$(sed -nE '/vendor\/oneplus\/guacamole\/radio\/LOGO\.img/ { s/.*([0-9a-fA-F]{40}).*/\1/p; q; }' "$mk_file" | tr 'A-F' 'a-f')"
+    expected_sha1="$(sed -nE '/((vendor\/oneplus\/guacamole\/)?radio\/)?LOGO\.img/ { s/.*([0-9a-fA-F]{40}).*/\1/p; q; }' "$mk_file" | tr 'A-F' 'a-f')"
 
     if [ "$expected_sha1" != "$actual_sha1" ]; then
       log "Updating LOGO.img SHA1 in $mk_file to $actual_sha1"
@@ -169,7 +172,7 @@ updated_lines = []
 changed = False
 
 for line in lines:
-    if "vendor/oneplus/guacamole/radio/LOGO.img" in line:
+    if re.search(r"((vendor/oneplus/guacamole/)?radio/)?LOGO\.img", line):
         line2 = re.sub(r"[0-9a-fA-F]{40}", actual_sha1, line, count=1)
         if line2 != line:
             changed = True
@@ -180,7 +183,7 @@ if changed:
     mk_path.write_text("\n".join(updated_lines) + "\n")
 PYCODE
 
-      expected_sha1="$(sed -nE '/vendor\/oneplus\/guacamole\/radio\/LOGO\.img/ { s/.*([0-9a-fA-F]{40}).*/\1/p; q; }' "$mk_file" | tr 'A-F' 'a-f')"
+      expected_sha1="$(sed -nE '/((vendor\/oneplus\/guacamole\/)?radio\/)?LOGO\.img/ { s/.*([0-9a-fA-F]{40}).*/\1/p; q; }' "$mk_file" | tr 'A-F' 'a-f')"
     else
       log "LOGO.img SHA1 already matches in $mk_file ($actual_sha1)"
     fi
@@ -269,7 +272,21 @@ build_kernel() {
   # reintroduce stale SHA1 pins for LOGO.img. Recheck right before building.
   fix_guacamole_logo_sha1
 
-  mka bootimage
+  local build_log
+  build_log="$(mktemp)"
+
+  if ! mka bootimage 2>&1 | tee "$build_log"; then
+    if grep -q "vendor/oneplus/guacamole/radio/LOGO.img SHA1 mismatch" "$build_log"; then
+      log "Detected LOGO.img SHA1 mismatch during build; re-normalizing and retrying once"
+      fix_guacamole_logo_sha1
+      mka bootimage
+    else
+      rm -f "$build_log"
+      return 1
+    fi
+  fi
+
+  rm -f "$build_log"
 
   if [ "$had_nounset" -eq 1 ]; then
     set -u
