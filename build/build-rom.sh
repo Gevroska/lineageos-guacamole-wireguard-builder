@@ -243,7 +243,7 @@ resolve_kernel_dir() {
     fi
   done
 
-  candidate="$(find "$WORKDIR/kernel" -mindepth 2 -maxdepth 5 -type f -path '*/arch/arm64/configs/vendor/oplus.config' -print -quit 2>/dev/null || true)"
+  candidate="$(find "$WORKDIR/kernel" -mindepth 2 -maxdepth 8 -type f -path '*/arch/arm64/configs/vendor/oplus.config' -print -quit 2>/dev/null || true)"
   if [ -n "$candidate" ]; then
     KERNEL_DIR="$(dirname "$(dirname "$(dirname "$(dirname "$(dirname "$candidate")")")")")"
     echo "$KERNEL_DIR"
@@ -318,7 +318,7 @@ PYCODE
 patch_kernel_if_needed() {
   local kernel_dir
   kernel_dir="$(resolve_kernel_dir)" || {
-    echo "Kernel tree not found under expected locations (e.g. $WORKDIR/kernel/oneplus/sm8150)" >&2
+    echo "Kernel tree not found under expected locations: $WORKDIR/kernel/oneplus/sm8150 or $WORKDIR/kernel/oneplus/sm8150-common" >&2
     exit 1
   }
   local wg_dir="/workspace/wireguard-linux-compat"
