@@ -207,6 +207,45 @@ clone_or_update_wireguard() {
   fi
 }
 
+
+fix_wireguard_timespec_macro_conflict() {
+  local kernel_dir="$WORKDIR/kernel/oneplus/sm8150"
+  local compat_h="$kernel_dir/net/wireguard/compat/compat.h"
+
+  [ -f "$compat_h" ] || return 0
+
+  # On some 4.14 Android kernels, include/linux/time64.h defines
+  # '__kernel_timespec' as a macro to 'timespec'. The compat header then
+  # declares 'struct __kernel_timespec', which macro-expands into a duplicate
+  # 'struct timespec' declaration and breaks WireGuard compilation.
+  #
+  # Make the patch idempotent: only inject the undef guard once.
+  if ! grep -q 'wireguard-builder: avoid __kernel_timespec macro redefinition' "$compat_h"; then
+    python3 - "$compat_h" <<'PYCODE'
+import pathlib
+import sys
+
+compat_h = pathlib.Path(sys.argv[1])
+text = compat_h.read_text()
+needle = 'struct __kernel_timespec {'
+if needle not in text:
+    sys.exit(0)
+
+replacement = (
+    '#ifdef __kernel_timespec\n'
+    '/* wireguard-builder: avoid __kernel_timespec macro redefinition */\n'
+    '#undef __kernel_timespec\n'
+    '#endif\n'
+    'struct __kernel_timespec {'
+)
+new_text = text.replace(needle, replacement, 1)
+if new_text != text:
+    compat_h.write_text(new_text)
+PYCODE
+    log "Applied WireGuard __kernel_timespec macro conflict workaround"
+  fi
+}
+
 patch_kernel_if_needed() {
   local kernel_dir="$WORKDIR/kernel/oneplus/sm8150"
   local wg_dir="/workspace/wireguard-linux-compat"
@@ -225,6 +264,8 @@ patch_kernel_if_needed() {
     "$wg_dir/kernel-tree-scripts/create-patch.sh" | patch -p1
     touch "$stamp"
   fi
+
+  fix_wireguard_timespec_macro_conflict
 
   log "Applying kernel config fragment"
   /home/builder/build/apply-config-fragment.sh \
@@ -271,21 +312,31 @@ build_kernel() {
   # reintroduce stale SHA1 pins for radio blobs. Recheck right before building.
   normalize_guacamole_radio_sha1s
 
-  local build_log
-  build_log="$(mktemp)"
+  local build_log="$WORKDIR/out/bootimage-build.log"
+  mkdir -p "$(dirname "$build_log")"
+  rm -f "$build_log"
+
+  report_build_failure() {
+    log "Build failed. Full log: $build_log"
+    log "Recent error lines from build log"
+    grep -En '(^|[[:space:]])(error:|fatal:|FAILED:|Killed|No space left on device|undefined reference)' "$build_log" | tail -n 40 || true
+    log "Last 120 lines of build log"
+    tail -n 120 "$build_log" || true
+  }
 
   if ! mka bootimage 2>&1 | tee "$build_log"; then
     if grep -Eq "vendor/oneplus/guacamole/radio/[^ ]+ SHA1 mismatch" "$build_log"; then
       log "Detected radio blob SHA1 mismatch during build; re-normalizing and retrying once"
       normalize_guacamole_radio_sha1s
-      mka bootimage
+      if ! mka bootimage 2>&1 | tee -a "$build_log"; then
+        report_build_failure
+        return 1
+      fi
     else
-      rm -f "$build_log"
+      report_build_failure
       return 1
     fi
   fi
-
-  rm -f "$build_log"
 
   if [ "$had_nounset" -eq 1 ]; then
     set -u
