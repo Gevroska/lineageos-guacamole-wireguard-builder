@@ -240,7 +240,29 @@ build_kernel() {
   fi
 
   source build/envsetup.sh
-  lunch "lineage_${DEVICE}-userdebug"
+
+  if declare -F breakfast >/dev/null 2>&1; then
+    log "Selecting target via breakfast: ${DEVICE} userdebug"
+    if breakfast "$DEVICE" userdebug; then
+      :
+    elif breakfast "$DEVICE"; then
+      :
+    else
+      echo "Failed to select build target with breakfast for device: $DEVICE" >&2
+      exit 1
+    fi
+  else
+    log "Selecting target via lunch"
+    if lunch "lineage_${DEVICE}-userdebug"; then
+      :
+    elif lunch "lineage_${DEVICE}-trunk_staging-userdebug"; then
+      :
+    else
+      echo "Failed to select build target via lunch for device: $DEVICE" >&2
+      exit 1
+    fi
+  fi
+
   mka bootimage
 
   if [ "$had_nounset" -eq 1 ]; then

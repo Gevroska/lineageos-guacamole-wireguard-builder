@@ -130,7 +130,7 @@ docker compose up --build
 
 ## Quick start (prebuilt image)
 
-Run the prebuilt image (the build script starts automatically, syncs/sanitizes sources, patches kernel config/WireGuard, builds `bootimage`, streams logs to stdout/stderr, and exits when done):
+Run the prebuilt image (the build script starts automatically, syncs/sanitizes sources, patches kernel config/WireGuard, auto-selects the device target via `breakfast`/`lunch`, builds `bootimage`, streams logs to stdout/stderr, and exits when done):
 
 ```bash
 docker run --rm -it \
