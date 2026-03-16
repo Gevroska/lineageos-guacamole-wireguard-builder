@@ -10,6 +10,7 @@ BUILD_JOBS="${BUILD_JOBS:-}"
 JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-21-openjdk-amd64}"
 WG_REPO="${WG_REPO:-https://git.zx2c4.com/wireguard-linux-compat}"
 MANIFEST_URL="${MANIFEST_URL:-https://github.com/LineageOS/android.git}"
+KERNEL_DIR=""
 
 export USE_CCACHE=1
 export CCACHE_DIR
@@ -207,10 +208,56 @@ clone_or_update_wireguard() {
   fi
 }
 
+resolve_kernel_dir() {
+  if [ -n "$KERNEL_DIR" ] && [ -d "$KERNEL_DIR" ]; then
+    echo "$KERNEL_DIR"
+    return 0
+  fi
+
+  local candidate
+  for candidate in \
+    "$WORKDIR/kernel/oneplus/sm8150" \
+    "$WORKDIR/kernel/oneplus/sm8150-common"
+  do
+    if [ -d "$candidate" ]; then
+      KERNEL_DIR="$candidate"
+      echo "$KERNEL_DIR"
+      return 0
+    fi
+  done
+
+  # If a pre-known kernel path is missing, try syncing likely oneplus SM8150 projects.
+  if [ -d "$WORKDIR/.repo" ]; then
+    repo sync -c --no-clone-bundle --no-tags -j"$(nproc --all)" \
+      kernel/oneplus/sm8150 kernel/oneplus/sm8150-common >/dev/null 2>&1 || true
+  fi
+
+  for candidate in \
+    "$WORKDIR/kernel/oneplus/sm8150" \
+    "$WORKDIR/kernel/oneplus/sm8150-common"
+  do
+    if [ -d "$candidate" ]; then
+      KERNEL_DIR="$candidate"
+      echo "$KERNEL_DIR"
+      return 0
+    fi
+  done
+
+  candidate="$(find "$WORKDIR/kernel" -mindepth 2 -maxdepth 5 -type f -path '*/arch/arm64/configs/vendor/oplus.config' -print -quit 2>/dev/null || true)"
+  if [ -n "$candidate" ]; then
+    KERNEL_DIR="$(dirname "$(dirname "$(dirname "$(dirname "$(dirname "$candidate")")")")")"
+    echo "$KERNEL_DIR"
+    return 0
+  fi
+
+  return 1
+}
+
 
 
 prefer_native_wireguard_over_compat() {
-  local kernel_dir="$WORKDIR/kernel/oneplus/sm8150"
+  local kernel_dir
+  kernel_dir="$(resolve_kernel_dir)" || return 0
   local net_wg_dir="$kernel_dir/net/wireguard"
   local drv_wg_dir="$kernel_dir/drivers/net/wireguard"
   local net_mk="$kernel_dir/net/Makefile"
@@ -230,7 +277,8 @@ prefer_native_wireguard_over_compat() {
 }
 
 fix_wireguard_timespec_macro_conflict() {
-  local kernel_dir="$WORKDIR/kernel/oneplus/sm8150"
+  local kernel_dir
+  kernel_dir="$(resolve_kernel_dir)" || return 0
   local compat_h="$kernel_dir/net/wireguard/compat/compat.h"
 
   [ -f "$compat_h" ] || return 0
@@ -268,11 +316,13 @@ PYCODE
 }
 
 patch_kernel_if_needed() {
-  local kernel_dir="$WORKDIR/kernel/oneplus/sm8150"
+  local kernel_dir
+  kernel_dir="$(resolve_kernel_dir)" || {
+    echo "Kernel tree not found under expected locations (e.g. $WORKDIR/kernel/oneplus/sm8150)" >&2
+    exit 1
+  }
   local wg_dir="/workspace/wireguard-linux-compat"
   local stamp="$WORKDIR/.wg_patch_applied"
-
-  [ -d "$kernel_dir" ] || { echo "Kernel tree not found: $kernel_dir" >&2; exit 1; }
 
   cd "$kernel_dir"
 
