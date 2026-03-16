@@ -271,21 +271,31 @@ build_kernel() {
   # reintroduce stale SHA1 pins for radio blobs. Recheck right before building.
   normalize_guacamole_radio_sha1s
 
-  local build_log
-  build_log="$(mktemp)"
+  local build_log="$WORKDIR/out/bootimage-build.log"
+  mkdir -p "$(dirname "$build_log")"
+  rm -f "$build_log"
+
+  report_build_failure() {
+    log "Build failed. Full log: $build_log"
+    log "Recent error lines from build log"
+    grep -En '(^|[[:space:]])(error:|fatal:|FAILED:|Killed|No space left on device|undefined reference)' "$build_log" | tail -n 40 || true
+    log "Last 120 lines of build log"
+    tail -n 120 "$build_log" || true
+  }
 
   if ! mka bootimage 2>&1 | tee "$build_log"; then
     if grep -Eq "vendor/oneplus/guacamole/radio/[^ ]+ SHA1 mismatch" "$build_log"; then
       log "Detected radio blob SHA1 mismatch during build; re-normalizing and retrying once"
       normalize_guacamole_radio_sha1s
-      mka bootimage
+      if ! mka bootimage 2>&1 | tee -a "$build_log"; then
+        report_build_failure
+        return 1
+      fi
     else
-      rm -f "$build_log"
+      report_build_failure
       return 1
     fi
   fi
-
-  rm -f "$build_log"
 
   if [ "$had_nounset" -eq 1 ]; then
     set -u
