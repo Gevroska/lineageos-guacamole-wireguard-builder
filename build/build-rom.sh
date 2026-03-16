@@ -181,6 +181,8 @@ if changed:
 PYCODE
 
       expected_sha1="$(sed -nE '/vendor\/oneplus\/guacamole\/radio\/LOGO\.img/ { s/.*([0-9a-fA-F]{40}).*/\1/p; q; }' "$mk_file" | tr 'A-F' 'a-f')"
+    else
+      log "LOGO.img SHA1 already matches in $mk_file ($actual_sha1)"
     fi
 
     if [ -z "$expected_sha1" ] || [ "$expected_sha1" != "$actual_sha1" ]; then
@@ -262,6 +264,10 @@ build_kernel() {
       exit 1
     fi
   fi
+
+  # Some vendor trees regenerate/sync blobs during target setup and can
+  # reintroduce stale SHA1 pins for LOGO.img. Recheck right before building.
+  fix_guacamole_logo_sha1
 
   mka bootimage
 
