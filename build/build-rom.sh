@@ -215,10 +215,22 @@ resolve_kernel_dir() {
   fi
 
   local candidate
-  for candidate in \
-    "$WORKDIR/kernel/oneplus/sm8150" \
+  local -a kernel_candidates=(
+    "$WORKDIR/kernel/oneplus/sm8150"
     "$WORKDIR/kernel/oneplus/sm8150-common"
-  do
+  )
+
+  # Learn device-declared kernel paths (if available), e.g. TARGET_KERNEL_SOURCE.
+  local config_file
+  while IFS= read -r config_file; do
+    candidate="$(sed -n -E 's/^[[:space:]]*TARGET_KERNEL_SOURCE[[:space:]]*:?=[[:space:]]*([^[:space:]#]+).*/\1/p' "$config_file" | head -n1)"
+    [ -n "$candidate" ] || continue
+    candidate="${candidate%%/}"
+    kernel_candidates+=("$WORKDIR/$candidate")
+  done < <(find "$WORKDIR/device" -type f \( -name 'BoardConfig*.mk' -o -name 'lineage_*.mk' \) 2>/dev/null)
+
+  # First pass: direct path checks.
+  for candidate in "${kernel_candidates[@]}"; do
     if [ -d "$candidate" ]; then
       KERNEL_DIR="$candidate"
       echo "$KERNEL_DIR"
@@ -226,16 +238,28 @@ resolve_kernel_dir() {
     fi
   done
 
-  # If a pre-known kernel path is missing, try syncing likely oneplus SM8150 projects.
+  # If likely paths are missing, try syncing them (best effort).
   if [ -d "$WORKDIR/.repo" ]; then
-    repo sync -c --no-clone-bundle --no-tags -j"$(nproc --all)" \
-      kernel/oneplus/sm8150 kernel/oneplus/sm8150-common >/dev/null 2>&1 || true
+    local rel
+    local -a to_sync=()
+    for candidate in "${kernel_candidates[@]}"; do
+      rel="${candidate#"$WORKDIR/"}"
+      [ -n "$rel" ] || continue
+      [ "$rel" = "$candidate" ] && continue
+      case "$rel" in
+        kernel/*) to_sync+=("$rel") ;;
+      esac
+    done
+
+    if [ ${#to_sync[@]} -eq 0 ]; then
+      to_sync=(kernel/oneplus/sm8150 kernel/oneplus/sm8150-common)
+    fi
+
+    repo sync -c --no-clone-bundle --no-tags -j"$(nproc --all)" "${to_sync[@]}" >/dev/null 2>&1 || true
   fi
 
-  for candidate in \
-    "$WORKDIR/kernel/oneplus/sm8150" \
-    "$WORKDIR/kernel/oneplus/sm8150-common"
-  do
+  # Second pass after targeted sync.
+  for candidate in "${kernel_candidates[@]}"; do
     if [ -d "$candidate" ]; then
       KERNEL_DIR="$candidate"
       echo "$KERNEL_DIR"
@@ -243,9 +267,10 @@ resolve_kernel_dir() {
     fi
   done
 
-  candidate="$(find "$WORKDIR/kernel" -mindepth 2 -maxdepth 8 -type f -path '*/arch/arm64/configs/vendor/oplus.config' -print -quit 2>/dev/null || true)"
+  # Final fallback: infer kernel root from any arch/arm64 subtree.
+  candidate="$(find "$WORKDIR/kernel" -mindepth 2 -maxdepth 8 -type d -path '*/arch/arm64' -print -quit 2>/dev/null || true)"
   if [ -n "$candidate" ]; then
-    KERNEL_DIR="$(dirname "$(dirname "$(dirname "$(dirname "$(dirname "$candidate")")")")")"
+    KERNEL_DIR="$(dirname "$(dirname "$candidate")")"
     echo "$KERNEL_DIR"
     return 0
   fi
