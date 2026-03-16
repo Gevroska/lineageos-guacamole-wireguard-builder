@@ -16,7 +16,7 @@ Dockerized LineageOS 23.2 build environment for the OnePlus 7 Pro (`guacamole`) 
 
 ## Why this repo exists
 
-The goal is to build a proper LineageOS ROM through the normal Lineage build system while ensuring:
+The goal is to build a patched LineageOS kernel/boot image for `guacamole` while ensuring:
 
 - the kernel still supports F2FS so an existing F2FS `/data` continues to mount
 - WireGuard support is actually present in the kernel on the 4.14 tree
@@ -50,7 +50,7 @@ The build script:
 
 - `Dockerfile` — build image
 - `compose.yaml` — Docker Compose stack definition
-- `build/build-rom.sh` — full automated build script
+- `build/build-rom.sh` — automated kernel (`bootimage`) build script
 - `build/apply-config-fragment.sh` — helper to merge config fragment
 - `patches/kernel-extra.config` — extra kernel options to force
 
@@ -130,7 +130,7 @@ docker compose up --build
 
 ## Quick start (prebuilt image)
 
-Run the prebuilt image (the build script starts automatically, streams logs to stdout/stderr, and the container exits when done):
+Run the prebuilt image (the build script starts automatically, syncs/sanitizes sources, patches kernel config/WireGuard, auto-selects the device target via `breakfast`/`lunch`, builds `bootimage`, streams logs to stdout/stderr, and exits when done):
 
 ```bash
 docker run --rm -it \

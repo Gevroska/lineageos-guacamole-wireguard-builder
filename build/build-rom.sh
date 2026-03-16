@@ -118,22 +118,6 @@ prepare_sources() {
   log "prepare_sources is deprecated and now a no-op"
 }
 
-with_envsetup() {
-  local had_nounset=0
-  if [[ $- == *u* ]]; then
-    had_nounset=1
-    set +u
-  fi
-
-  source build/envsetup.sh
-  "$@"
-
-  if [ "$had_nounset" -eq 1 ]; then
-    set -u
-  fi
-}
-
-
 ensure_vendor_repos() {
   cd "$WORKDIR"
 
@@ -244,11 +228,46 @@ patch_kernel_if_needed() {
     /home/builder/patches/kernel-extra.config
 }
 
-build_rom() {
+build_kernel() {
   cd "$WORKDIR"
   detect_build_jobs
   export NINJA_ARGS="-j${BUILD_JOBS}"
-  with_envsetup brunch "$DEVICE"
+
+  local had_nounset=0
+  if [[ $- == *u* ]]; then
+    had_nounset=1
+    set +u
+  fi
+
+  source build/envsetup.sh
+
+  if declare -F breakfast >/dev/null 2>&1; then
+    log "Selecting target via breakfast: ${DEVICE} userdebug"
+    if breakfast "$DEVICE" userdebug; then
+      :
+    elif breakfast "$DEVICE"; then
+      :
+    else
+      echo "Failed to select build target with breakfast for device: $DEVICE" >&2
+      exit 1
+    fi
+  else
+    log "Selecting target via lunch"
+    if lunch "lineage_${DEVICE}-userdebug"; then
+      :
+    elif lunch "lineage_${DEVICE}-trunk_staging-userdebug"; then
+      :
+    else
+      echo "Failed to select build target via lunch for device: $DEVICE" >&2
+      exit 1
+    fi
+  fi
+
+  mka bootimage
+
+  if [ "$had_nounset" -eq 1 ]; then
+    set -u
+  fi
 }
 
 main() {
@@ -262,7 +281,8 @@ main() {
   prepare_sources
   clone_or_update_wireguard
   patch_kernel_if_needed
-  build_rom
+  log "Running kernel-only build (bootimage)"
+  build_kernel
   log "Build complete"
   log "Artifacts: $WORKDIR/out/target/product/$DEVICE/"
 }
