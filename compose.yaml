@@ -9,7 +9,7 @@ services:
       DEVICE: ${DEVICE:-guacamole}
       WORKDIR: ${WORKDIR:-/workspace/android}
       CCACHE_DIR: ${CCACHE_DIR:-/ccache}
-      CCACHE_SIZE: ${CCACHE_SIZE:-250G}
+      CCACHE_SIZE: ${CCACHE_SIZE:-2G}
       JAVA_HOME: ${JAVA_HOME:-/usr/lib/jvm/java-21-openjdk-amd64}
       WG_REPO: ${WG_REPO:-https://git.zx2c4.com/wireguard-linux-compat}
       BUILD_JOBS: ${BUILD_JOBS:-}

@@ -75,6 +75,8 @@ Use whichever path layout you prefer, but keep the mounts persistent.
 
 Docker Compose automatically reads a `.env` file in the repo root. Using one is recommended if you want to override build settings (branch/device/workdir/ccache/java/wireguard URL) without editing `compose.yaml`.
 
+The default `CCACHE_SIZE` is intentionally small (`2G`) because this project performs a kernel-only (`bootimage`) build rather than a full ROM build.
+
 Example `.env` (same keys as the defaults):
 
 ```dotenv
@@ -82,7 +84,7 @@ BRANCH=lineage-23.2
 DEVICE=guacamole
 WORKDIR=/workspace/android
 CCACHE_DIR=/ccache
-CCACHE_SIZE=250G
+CCACHE_SIZE=2G
 JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 WG_REPO=https://git.zx2c4.com/wireguard-linux-compat
 # optional
