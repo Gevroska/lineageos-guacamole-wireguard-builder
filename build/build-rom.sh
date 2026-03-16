@@ -152,6 +152,60 @@ ensure_vendor_repos() {
   log "Syncing vendor projects"
   repo sync -c --no-clone-bundle --no-tags -j"$(nproc --all)" vendor/oneplus/guacamole vendor/oneplus/sm8150-common
 }
+
+fix_guacamole_logo_sha1() {
+  cd "$WORKDIR"
+
+  local mk_file="vendor/oneplus/guacamole/Android.mk"
+  local logo_file="vendor/oneplus/guacamole/radio/LOGO.img"
+
+  [ -f "$mk_file" ] || return 0
+  [ -f "$logo_file" ] || return 0
+
+  local actual_sha1
+  actual_sha1="$(sha1sum "$logo_file" | awk '{print $1}')"
+
+  # The vendor blob set occasionally republishes LOGO.img with a different hash
+  # while keeping the same filename. Keep Android.mk in sync to avoid kati aborting.
+  if grep -q "vendor/oneplus/guacamole/radio/LOGO\.img" "$mk_file"; then
+    local expected_sha1
+    expected_sha1="$(sed -nE '/vendor\/oneplus\/guacamole\/radio\/LOGO\.img/ { s/.*([0-9a-fA-F]{40}).*/\1/p; q; }' "$mk_file" | tr 'A-F' 'a-f')"
+
+    if [ "$expected_sha1" != "$actual_sha1" ]; then
+      log "Updating LOGO.img SHA1 in $mk_file to $actual_sha1"
+      python3 - "$mk_file" "$actual_sha1" <<'PYCODE'
+import pathlib
+import re
+import sys
+
+mk_path = pathlib.Path(sys.argv[1])
+actual_sha1 = sys.argv[2]
+lines = mk_path.read_text().splitlines()
+updated_lines = []
+changed = False
+
+for line in lines:
+    if "vendor/oneplus/guacamole/radio/LOGO.img" in line:
+        line2 = re.sub(r"[0-9a-fA-F]{40}", actual_sha1, line, count=1)
+        if line2 != line:
+            changed = True
+        line = line2
+    updated_lines.append(line)
+
+if changed:
+    mk_path.write_text("\n".join(updated_lines) + "\n")
+PYCODE
+
+      expected_sha1="$(sed -nE '/vendor\/oneplus\/guacamole\/radio\/LOGO\.img/ { s/.*([0-9a-fA-F]{40}).*/\1/p; q; }' "$mk_file" | tr 'A-F' 'a-f')"
+    fi
+
+    if [ -z "$expected_sha1" ] || [ "$expected_sha1" != "$actual_sha1" ]; then
+      echo "Failed to normalize LOGO.img SHA1 in $mk_file (expected: ${expected_sha1:-missing}, actual: $actual_sha1)" >&2
+      return 1
+    fi
+  fi
+}
+
 clone_or_update_wireguard() {
   local wg_dir="/workspace/wireguard-linux-compat"
 
@@ -204,6 +258,7 @@ main() {
   ccache -M "$CCACHE_SIZE" || true
   sync_sources
   ensure_vendor_repos
+  fix_guacamole_logo_sha1
   prepare_sources
   clone_or_update_wireguard
   patch_kernel_if_needed
