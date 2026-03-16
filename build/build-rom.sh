@@ -137,62 +137,61 @@ ensure_vendor_repos() {
   repo sync -c --no-clone-bundle --no-tags -j"$(nproc --all)" vendor/oneplus/guacamole vendor/oneplus/sm8150-common
 }
 
-fix_guacamole_logo_sha1() {
+normalize_guacamole_radio_sha1s() {
   cd "$WORKDIR"
 
   local mk_file="vendor/oneplus/guacamole/Android.mk"
-  local logo_file="vendor/oneplus/guacamole/radio/LOGO.img"
+  local radio_dir="vendor/oneplus/guacamole/radio"
 
   [ -f "$mk_file" ] || return 0
-  [ -f "$logo_file" ] || return 0
+  [ -d "$radio_dir" ] || return 0
 
-  local actual_sha1
-  actual_sha1="$(sha1sum "$logo_file" | awk '{print $1}')"
-
-  # The vendor blob set occasionally republishes LOGO.img with a different hash
-  # while keeping the same filename. Keep Android.mk in sync to avoid kati aborting.
-  # Match both common formats:
-  #   - radio/LOGO.img
-  #   - vendor/oneplus/guacamole/radio/LOGO.img
-  if grep -Eq "(^|[[:space:],])((vendor/oneplus/guacamole/)?radio/)?LOGO\.img([[:space:],]|$)" "$mk_file"; then
-    local expected_sha1
-    expected_sha1="$(sed -nE '/((vendor\/oneplus\/guacamole\/)?radio\/)?LOGO\.img/ { s/.*([0-9a-fA-F]{40}).*/\1/p; q; }' "$mk_file" | tr 'A-F' 'a-f')"
-
-    if [ "$expected_sha1" != "$actual_sha1" ]; then
-      log "Updating LOGO.img SHA1 in $mk_file to $actual_sha1"
-      python3 - "$mk_file" "$actual_sha1" <<'PYCODE'
+  # Normalize SHA1 pins for radio blobs referenced by vendor Android.mk entries
+  # like: $(call add-radio-file-sha1-checked,radio/abl.img,<sha1>)
+  python3 - "$mk_file" "$radio_dir" <<'PYCODE'
+import hashlib
 import pathlib
 import re
 import sys
 
 mk_path = pathlib.Path(sys.argv[1])
-actual_sha1 = sys.argv[2]
+radio_dir = pathlib.Path(sys.argv[2])
+
+pattern = re.compile(r'(add-radio-file-sha1-checked\s*,\s*([^,\s)]+)\s*,\s*([0-9a-fA-F]{40}))')
 lines = mk_path.read_text().splitlines()
-updated_lines = []
+out = []
 changed = False
 
 for line in lines:
-    if re.search(r"((vendor/oneplus/guacamole/)?radio/)?LOGO\.img", line):
-        line2 = re.sub(r"[0-9a-fA-F]{40}", actual_sha1, line, count=1)
-        if line2 != line:
-            changed = True
-        line = line2
-    updated_lines.append(line)
+    m = pattern.search(line)
+    if not m:
+        out.append(line)
+        continue
+
+    rel_path = m.group(2).strip().strip("\"'")
+    expected = m.group(3).lower()
+
+    # Vendor makefiles usually reference radio/*.img relative to vendor root.
+    # Keep behavior safe by only mutating entries that resolve under radio_dir.
+    candidate = rel_path
+    if rel_path.startswith('vendor/oneplus/guacamole/'):
+        candidate = rel_path[len('vendor/oneplus/guacamole/'):]
+    blob_path = (radio_dir.parent / candidate).resolve()
+
+    if not blob_path.exists() or not str(blob_path).startswith(str(radio_dir.parent.resolve())):
+        out.append(line)
+        continue
+
+    actual = hashlib.sha1(blob_path.read_bytes()).hexdigest()
+    if actual != expected:
+        print(f"normalize: {rel_path} {expected} -> {actual}")
+        line = line[:m.start(3)] + actual + line[m.end(3):]
+        changed = True
+    out.append(line)
 
 if changed:
-    mk_path.write_text("\n".join(updated_lines) + "\n")
+    mk_path.write_text("\n".join(out) + "\n")
 PYCODE
-
-      expected_sha1="$(sed -nE '/((vendor\/oneplus\/guacamole\/)?radio\/)?LOGO\.img/ { s/.*([0-9a-fA-F]{40}).*/\1/p; q; }' "$mk_file" | tr 'A-F' 'a-f')"
-    else
-      log "LOGO.img SHA1 already matches in $mk_file ($actual_sha1)"
-    fi
-
-    if [ -z "$expected_sha1" ] || [ "$expected_sha1" != "$actual_sha1" ]; then
-      echo "Failed to normalize LOGO.img SHA1 in $mk_file (expected: ${expected_sha1:-missing}, actual: $actual_sha1)" >&2
-      return 1
-    fi
-  fi
 }
 
 clone_or_update_wireguard() {
@@ -269,16 +268,16 @@ build_kernel() {
   fi
 
   # Some vendor trees regenerate/sync blobs during target setup and can
-  # reintroduce stale SHA1 pins for LOGO.img. Recheck right before building.
-  fix_guacamole_logo_sha1
+  # reintroduce stale SHA1 pins for radio blobs. Recheck right before building.
+  normalize_guacamole_radio_sha1s
 
   local build_log
   build_log="$(mktemp)"
 
   if ! mka bootimage 2>&1 | tee "$build_log"; then
-    if grep -q "vendor/oneplus/guacamole/radio/LOGO.img SHA1 mismatch" "$build_log"; then
-      log "Detected LOGO.img SHA1 mismatch during build; re-normalizing and retrying once"
-      fix_guacamole_logo_sha1
+    if grep -Eq "vendor/oneplus/guacamole/radio/[^ ]+ SHA1 mismatch" "$build_log"; then
+      log "Detected radio blob SHA1 mismatch during build; re-normalizing and retrying once"
+      normalize_guacamole_radio_sha1s
       mka bootimage
     else
       rm -f "$build_log"
@@ -300,7 +299,7 @@ main() {
   ccache -M "$CCACHE_SIZE" || true
   sync_sources
   ensure_vendor_repos
-  fix_guacamole_logo_sha1
+  normalize_guacamole_radio_sha1s
   prepare_sources
   clone_or_update_wireguard
   patch_kernel_if_needed
