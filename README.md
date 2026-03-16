@@ -12,7 +12,7 @@ Dockerized LineageOS 23.2 build environment for the OnePlus 7 Pro (`guacamole`) 
 - Phone: OnePlus 7 Pro
 - Codename: `guacamole`
 - SoC: Snapdragon 855 / SM8150
-- Kernel tree: `kernel/oneplus/sm8150`
+- Kernel tree: auto-detected (`kernel/oneplus/sm8150` or `kernel/oneplus/sm8150-common`)
 
 ## Why this repo exists
 
@@ -43,7 +43,7 @@ The build script:
 
 1. clones `wireguard-linux-compat`
 2. generates an in-tree patch with `create-patch.sh`
-3. applies it to `kernel/oneplus/sm8150`
+3. applies it to the detected SM8150 kernel tree
 4. ensures `CONFIG_WIREGUARD=y` remains enabled
 
 ## Repo contents
