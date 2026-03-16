@@ -208,6 +208,27 @@ clone_or_update_wireguard() {
 }
 
 
+
+prefer_native_wireguard_over_compat() {
+  local kernel_dir="$WORKDIR/kernel/oneplus/sm8150"
+  local net_wg_dir="$kernel_dir/net/wireguard"
+  local drv_wg_dir="$kernel_dir/drivers/net/wireguard"
+  local net_mk="$kernel_dir/net/Makefile"
+  local net_kconfig="$kernel_dir/net/Kconfig"
+
+  [ -d "$net_wg_dir" ] || return 0
+  [ -d "$drv_wg_dir" ] || return 0
+
+  log "Detected both net/wireguard and drivers/net/wireguard; preferring native drivers tree"
+
+  # Remove compat tree to avoid duplicate symbol linkage when both implementations build.
+  rm -rf "$net_wg_dir"
+
+  # Remove compat tree hooks from net/Makefile and net/Kconfig (idempotent).
+  [ ! -f "$net_mk" ] || sed -i -E '/wireguard\//d' "$net_mk"
+  [ ! -f "$net_kconfig" ] || sed -i -E '/source "net\/wireguard\/Kconfig"/d' "$net_kconfig"
+}
+
 fix_wireguard_timespec_macro_conflict() {
   local kernel_dir="$WORKDIR/kernel/oneplus/sm8150"
   local compat_h="$kernel_dir/net/wireguard/compat/compat.h"
@@ -255,7 +276,9 @@ patch_kernel_if_needed() {
 
   cd "$kernel_dir"
 
-  if grep -Rqs 'WireGuard secure network tunnel' net 2>/dev/null; then
+  if [ -d "$kernel_dir/drivers/net/wireguard" ]; then
+    log "Native kernel WireGuard detected under drivers/net/wireguard; skipping compat patch"
+  elif grep -Rqs 'WireGuard secure network tunnel' net 2>/dev/null; then
     log "WireGuard already appears present in kernel tree"
   elif [ -f "$stamp" ]; then
     log "WireGuard patch stamp exists; assuming already applied"
@@ -265,6 +288,7 @@ patch_kernel_if_needed() {
     touch "$stamp"
   fi
 
+  prefer_native_wireguard_over_compat
   fix_wireguard_timespec_macro_conflict
 
   log "Applying kernel config fragment"
