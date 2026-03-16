@@ -23,6 +23,17 @@ log() {
   printf '\n[%s] %s\n' "$(date '+%F %T')" "$*"
 }
 
+report_unexpected_failure() {
+  local exit_code="$1"
+  local line_no="$2"
+  local cmd="$3"
+
+  printf '\n[%s] ERROR: command failed (exit %s) at line %s: %s\n' \
+    "$(date '+%F %T')" "$exit_code" "$line_no" "$cmd" >&2
+}
+
+trap 'report_unexpected_failure "$?" "$LINENO" "$BASH_COMMAND"' ERR
+
 require_git_identity() {
   git config --global user.name >/dev/null 2>&1 || git config --global user.name "Lineage Builder"
   git config --global user.email >/dev/null 2>&1 || git config --global user.email "builder@localhost"

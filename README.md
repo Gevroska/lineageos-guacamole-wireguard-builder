@@ -106,6 +106,20 @@ For reliable LineageOS 23.2 builds, use at least:
 
 Lower-memory hosts may hit OOM (`Killed`) during Soong bootstrap.
 
+### About the `repo` launcher update warning
+
+You may see this during `repo init`/`repo sync`:
+
+```
+... A new version of repo (...) is available.
+... The launcher is run from: /usr/bin/repo
+!!! The launcher is not writable.
+```
+
+Inside this container, that warning is expected and non-fatal: `repo` still runs using the checked-out implementation under `.repo/repo/`. It does **not** by itself explain a build crash.
+
+If the script exits unexpectedly, `build/build-rom.sh` now prints the failing command, line number, and exit code to stderr to make root-cause diagnosis easier.
+
 ### Build parallelism behavior (clarified)
 
 The build script no longer uses RAM-based heuristics to decide `-j`.
