@@ -152,6 +152,41 @@ ensure_vendor_repos() {
   log "Syncing vendor projects"
   repo sync -c --no-clone-bundle --no-tags -j"$(nproc --all)" vendor/oneplus/guacamole vendor/oneplus/sm8150-common
 }
+
+fix_guacamole_logo_sha1() {
+  cd "$WORKDIR"
+
+  local mk_file="vendor/oneplus/guacamole/Android.mk"
+  local logo_file="vendor/oneplus/guacamole/radio/LOGO.img"
+
+  [ -f "$mk_file" ] || return 0
+  [ -f "$logo_file" ] || return 0
+
+  local actual_sha1
+  actual_sha1="$(sha1sum "$logo_file" | awk '{print $1}')"
+
+  # The vendor blob set occasionally republishes LOGO.img with a different hash
+  # while keeping the same filename. Keep Android.mk in sync to avoid kati aborting.
+  if grep -q "radio/LOGO\.img" "$mk_file" && ! grep -q "$actual_sha1" "$mk_file"; then
+    log "Updating LOGO.img SHA1 in $mk_file to $actual_sha1"
+    python3 - "$mk_file" "$actual_sha1" <<'PY'
+import pathlib
+import re
+import sys
+
+mk_path = pathlib.Path(sys.argv[1])
+actual_sha1 = sys.argv[2]
+text = mk_path.read_text()
+
+pattern = r"(vendor/oneplus/guacamole/radio/LOGO\.img\|)[0-9a-f]{40}"
+updated = re.sub(pattern, r"\1" + actual_sha1, text)
+
+if updated != text:
+    mk_path.write_text(updated)
+PY
+  fi
+}
+
 clone_or_update_wireguard() {
   local wg_dir="/workspace/wireguard-linux-compat"
 
@@ -204,6 +239,7 @@ main() {
   ccache -M "$CCACHE_SIZE" || true
   sync_sources
   ensure_vendor_repos
+  fix_guacamole_logo_sha1
   prepare_sources
   clone_or_update_wireguard
   patch_kernel_if_needed
