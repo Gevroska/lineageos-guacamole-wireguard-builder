@@ -81,6 +81,22 @@ write_vendor_local_manifest() {
 EOF
 }
 
+write_device_kernel_local_manifest() {
+  cd "$WORKDIR"
+  [ -d .repo ] || return 0
+
+  mkdir -p .repo/local_manifests
+  cat > .repo/local_manifests/roomservice-device-kernel.xml <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+  <project name="LineageOS/android_device_oneplus_sm8150-common" path="device/oneplus/sm8150-common" remote="github" revision="${BRANCH}" />
+  <project name="LineageOS/android_device_oneplus_guacamole" path="device/oneplus/guacamole" remote="github" revision="${BRANCH}" />
+  <project name="LineageOS/android_kernel_oneplus_sm8150" path="kernel/oneplus/sm8150" remote="github" revision="${BRANCH}" />
+</manifest>
+EOF
+}
+
+
 sync_sources() {
   cd "$WORKDIR"
   clear_repo_locks
@@ -256,6 +272,14 @@ resolve_kernel_dir() {
     fi
 
     repo sync -c --no-clone-bundle --no-tags -j"$(nproc --all)" "${to_sync[@]}" >/dev/null 2>&1 || true
+  fi
+
+  # If kernel still does not exist, sync canonical device/kernel repos used by guacamole.
+  if [ -d "$WORKDIR/.repo" ]; then
+    write_device_kernel_local_manifest
+    repo sync -c --no-clone-bundle --no-tags -j"$(nproc --all)" \
+      device/oneplus/sm8150-common device/oneplus/guacamole \
+      kernel/oneplus/sm8150 >/dev/null 2>&1 || true
   fi
 
   # Second pass after targeted sync.
